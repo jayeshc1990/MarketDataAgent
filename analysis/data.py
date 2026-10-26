@@ -122,7 +122,7 @@ def atm_straddle(opts: pd.DataFrame, spot: pd.Series) -> pd.DataFrame:
         k = chain.index[np.argmin(np.abs(chain.index.to_numpy() - s))]
         r = chain.loc[k]
         rows[ts] = {"atm_strike": k, "straddle": r.get(("close", "CE"), np.nan) + r.get(("close", "PE"), np.nan),
-                    "atm_iv": np.nanmean([r.get(("iv", "CE"), np.nan), r.get(("iv", "PE"), np.nan)])}
+                    "atm_iv": pd.Series([r.get(("iv", "CE")), r.get(("iv", "PE"))], dtype=float).mean()}
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
@@ -156,7 +156,10 @@ def buildup_timeline(opts: pd.DataFrame, typ: str, window: int) -> pd.DataFrame:
     d = opts[opts["type"] == typ].sort_values("timestamp")
     price = d.pivot_table(index="timestamp", columns="strike", values="close")
     oi = d.pivot_table(index="timestamp", columns="strike", values="oi")
-    day = price.index.date
+    # rows can have OI but no candle (or the reverse), so put both on the same time/strike grid
+    times, strikes = price.index.union(oi.index), price.columns.union(oi.columns)
+    price, oi = price.reindex(index=times, columns=strikes), oi.reindex(index=times, columns=strikes)
+    day = times.date
     dp = price.groupby(day).diff(window)
     doi = oi.groupby(day).diff(window)
     lab = pd.DataFrame(np.nan, index=price.index, columns=price.columns, dtype=object)
