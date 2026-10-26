@@ -20,7 +20,7 @@ ROUTES = {
 # (max_calls, window_seconds) - kept slightly under Angel One's published limits
 LIMITS = {
     "login": [(1, 1.0)],
-    # Angel One refuses bursts well below its published 3/s, so stay at 1/s
+    # 1/s, below the published 3/s: Angel One refuses some requests even at low rates
     # (one cycle needs ~34 candle calls, the end-of-day backfill ~134)
     "candle": [(1, 1.0), (100, 60.0), (4000, 3600.0)],
     "quote": [(8, 1.0), (450, 60.0), (4800, 3600.0)],
@@ -29,7 +29,9 @@ LIMITS = {
 
 TOKEN_ERRORS = {"AG8001", "AG8002", "AG8003", "AB8050", "AB8051", "AB1010"}
 QUOTE_BATCH = 50
-RATE_COOLDOWN_START = 60.0     # seconds an endpoint is paused after "exceeding access rate"
+RATE_RETRY_DELAY = 1.5         # seconds, x refusal count, between retries of a refused request
+RATE_REFUSALS_BEFORE_PAUSE = 5  # consecutive "exceeding access rate" replies before pausing
+RATE_COOLDOWN_START = 60.0     # seconds an endpoint is paused after that
 RATE_COOLDOWN_MAX = 600.0
 
 
@@ -113,19 +115,29 @@ class AngelClient:
         until = self.paused_until.get(route, 0)
         if _time.monotonic() < until:
             raise RateLimited(route, until)
-        for attempt in range(retries):
+        attempt = refusals = 0
+        while attempt < retries:
             self.limiters[route].wait()
             try:
                 resp = self.session.post(url, json=payload, headers=self._headers(), timeout=20)
             except requests.RequestException as e:
-                log.warning("%s network error (%s), retry %d", route, e, attempt + 1)
+                attempt += 1
+                log.warning("%s network error (%s), retry %d", route, e, attempt)
                 _time.sleep(2 ** attempt)
                 continue
             if resp.status_code == 429 or "exceeding access rate" in resp.text:
-                raise self._pause(route, f"HTTP {resp.status_code} {resp.text[:120].strip()}")
+                # Angel One refuses requests at random even at low rates: retry shortly,
+                # and only pause the endpoint when refusals keep coming
+                refusals += 1
+                if refusals >= RATE_REFUSALS_BEFORE_PAUSE:
+                    raise self._pause(route, f"HTTP {resp.status_code} {resp.text[:120].strip()}")
+                log.debug("%s refused (%d), retrying", route, refusals)
+                _time.sleep(RATE_RETRY_DELAY * refusals)
+                continue
+            attempt += 1
             if resp.status_code in (500, 502, 503, 504):
                 log.warning("%s HTTP %s (%s), retry %d", route, resp.status_code,
-                            resp.text[:120].strip(), attempt + 1)
+                            resp.text[:120].strip(), attempt)
                 _time.sleep(2 ** attempt)
                 continue
             self.cooldown.pop(route, None)
