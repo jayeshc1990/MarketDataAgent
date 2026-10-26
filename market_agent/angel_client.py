@@ -27,6 +27,8 @@ LIMITS = {
 
 TOKEN_ERRORS = {"AG8001", "AG8002", "AG8003", "AB8050", "AB8051", "AB1010"}
 QUOTE_BATCH = 50
+RATE_COOLDOWN_START = 60.0     # seconds an endpoint is paused after "exceeding access rate"
+RATE_COOLDOWN_MAX = 600.0
 
 
 class RateLimiter:
@@ -59,6 +61,16 @@ class AngelAPIError(Exception):
         self.code = code
 
 
+class RateLimited(AngelAPIError):
+    """Endpoint refused with 'exceeding access rate'; it is paused until `until` (monotonic)."""
+
+    def __init__(self, route, until, detail=""):
+        super().__init__(f"{route} rate-limited by Angel One, paused {until - _time.monotonic():.0f}s"
+                         + (f" ({detail})" if detail else ""))
+        self.route = route
+        self.until = until
+
+
 class AngelClient:
     def __init__(self, base_url: str, creds: dict):
         self.base_url = base_url.rstrip("/")
@@ -66,6 +78,8 @@ class AngelClient:
         self.jwt = None
         self.session = requests.Session()
         self.limiters = {k: RateLimiter(v) for k, v in LIMITS.items()}
+        self.paused_until = {}     # route -> monotonic time
+        self.cooldown = {}         # route -> current cooldown seconds (doubles while refused)
 
     # ---------------------------------------------------------------- core
     def _headers(self):
@@ -83,8 +97,20 @@ class AngelClient:
             h["Authorization"] = f"Bearer {self.jwt}"
         return h
 
+    def _pause(self, route, detail):
+        """Pause the whole endpoint instead of letting every request retry into the block."""
+        cd = min(self.cooldown.get(route, RATE_COOLDOWN_START / 2) * 2, RATE_COOLDOWN_MAX)
+        self.cooldown[route] = cd
+        until = _time.monotonic() + cd
+        self.paused_until[route] = until
+        log.warning("%s: Angel One says '%s' - pausing this endpoint for %.0fs", route, detail, cd)
+        return RateLimited(route, until, detail)
+
     def _post(self, route: str, payload: dict, retries: int = 4):
         url = self.base_url + ROUTES[route]
+        until = self.paused_until.get(route, 0)
+        if _time.monotonic() < until:
+            raise RateLimited(route, until)
         for attempt in range(retries):
             self.limiters[route].wait()
             try:
@@ -93,10 +119,14 @@ class AngelClient:
                 log.warning("%s network error (%s), retry %d", route, e, attempt + 1)
                 _time.sleep(2 ** attempt)
                 continue
-            if resp.status_code in (429, 500, 502, 503, 504) or "exceeding access rate" in resp.text:
-                log.warning("%s HTTP %s, backing off", route, resp.status_code)
+            if resp.status_code == 429 or "exceeding access rate" in resp.text:
+                raise self._pause(route, f"HTTP {resp.status_code} {resp.text[:120].strip()}")
+            if resp.status_code in (500, 502, 503, 504):
+                log.warning("%s HTTP %s (%s), retry %d", route, resp.status_code,
+                            resp.text[:120].strip(), attempt + 1)
                 _time.sleep(2 ** attempt)
                 continue
+            self.cooldown.pop(route, None)
             if resp.status_code in (401, 403) and route != "login":
                 self.login()
                 continue

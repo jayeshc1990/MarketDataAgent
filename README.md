@@ -52,6 +52,7 @@ Runs today's session: logs in at 09:10, collects every minute until 15:40, does 
 | Command | Purpose |
 |---|---|
 | `python run_agent.py --daemon` | keep running across days |
+| `python run_agent.py --check` | test login, quotes and candles once (OK/FAIL) |
 | `python run_agent.py --once` | one cycle right now (ignores market hours) |
 | `python run_agent.py --once --mock` | offline test with generated data, no credentials |
 

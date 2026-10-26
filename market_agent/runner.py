@@ -70,6 +70,33 @@ def run_daemon(cfg, client, master_loader=None) -> None:
         _sleep_until(datetime.combine(tomorrow, cfg.market_start, IST) - timedelta(minutes=10))
 
 
+def run_check(cfg, client) -> bool:
+    """Call each Angel One endpoint once and report OK/FAIL - for diagnosing access problems."""
+    name, spec = next(iter(cfg.indices.items()))
+    exch, token = spec["spot"]["exchange"], spec["spot"]["token"]
+    day = now_ist().date()
+    while not cfg.is_trading_day(day) or (day == now_ist().date() and now_ist().time() < cfg.market_start):
+        day -= timedelta(days=1)
+    start = datetime.combine(day, cfg.market_start)
+
+    checks = [
+        ("login", client.login),
+        (f"quote {name}", lambda: client.quotes({exch: [token]})),
+        (f"candles {name} {day}", lambda: client.candles(exch, token, "ONE_MINUTE", start,
+                                                         start + timedelta(minutes=15))),
+    ]
+    ok = True
+    for label, call in checks:
+        try:
+            result = call()
+            extra = f" ({len(result)} rows)" if isinstance(result, list) else ""
+            print(f"  OK    {label}{extra}")
+        except Exception as e:
+            ok = False
+            print(f"  FAIL  {label}: {e}")
+    return ok
+
+
 def run_once(cfg, client, master_loader=None) -> None:
     """Single snapshot + candle backfill right now (ignores market hours) - for testing."""
     collector = Collector(cfg, client, Store(), master_loader)

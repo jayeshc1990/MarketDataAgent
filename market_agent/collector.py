@@ -7,12 +7,14 @@ from datetime import datetime, time, timedelta
 
 import pandas as pd
 
+from .angel_client import RateLimited
 from .config import IST
 from .greeks import greeks as bs_greeks
 from .instruments import ScripMaster, select_expiries, strikes_around
 
 log = logging.getLogger(__name__)
 CASH_CLOSE = time(15, 30)   # NSE/BSE F&O close; no snapshots for minutes at/after this
+FULL_BACKFILL_MAX_WAIT = 20 * 60   # end-of-day backfill waits out rate limits up to this long
 
 INDEX_COLS = ["timestamp", "open", "high", "low", "close", "spot_ltp",
               "fut_symbol", "fut_open", "fut_high", "fut_low", "fut_close", "fut_volume",
@@ -241,14 +243,27 @@ class Collector:
             n = math.ceil(len(options) / self.cfg.option_refresh_min)
             selected = [f for f in self.feeds if f.kind != "option"] + options[:n]
 
-        for f in selected:
+        backfill_deadline = _time.monotonic() + FULL_BACKFILL_MAX_WAIT
+        pending = list(selected)
+        while pending:
+            f = pending[0]
             last = f.series.last_candle_ts(f.prefix + "close")
             start = day_start if full or last is None else max(last.to_pydatetime(), day_start)
             try:
                 rows = self.client.candles(f.exchange, f.token, "ONE_MINUTE", start, now)
+            except RateLimited as e:
+                # Skipped feeds keep their old last_fetch, so they go first next cycle
+                if not full or e.until > backfill_deadline:
+                    log.warning("Candle downloads paused - %d feeds left for a later cycle", len(pending))
+                    return
+                log.info("Backfill waiting %.0fs for Angel One rate limit", e.until - _time.monotonic())
+                _time.sleep(max(0.0, e.until - _time.monotonic()) + 1)
+                continue
             except Exception as e:
                 log.warning("Candles failed for %s/%s: %s", f.exchange, f.token, e)
+                pending.pop(0)
                 continue
+            pending.pop(0)
             f.last_fetch = _time.monotonic()
             for r in rows:
                 ts = _ts(r[0])
