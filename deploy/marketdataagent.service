@@ -1,0 +1,14 @@
+[Unit]
+Description=MarketDataAgent - Indian F&O market data collector
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/python run_agent.py
+Restart=on-failure
+RestartSec=30
+# Session ends 15:40 IST; hard stop well after that
+RuntimeMaxSec=8h

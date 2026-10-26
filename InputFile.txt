@@ -1,0 +1,20 @@
+Project Name : MarketDataAgent
+Create a tool to download below data(Indian Share Market FNO Data), also it should run automatically monday to friday during indian market time(9:15AM to 15:40PM)
+
+Get index data
+	1. For Nifty/Banknifty/Sensex get OHLC for every 1 minute & 5 minute candle
+	2. Get these futrure volumes and OI data
+	3. Get India Vix data (OHLC)
+	4. Get Crude Oil Data (OHLC)
+Get options Data(contracts range to pull data will be defined in config file)
+	1. For Nifty/Banknifty/Sensex get its options OHLC for every 1 minute & 5 minute candle
+	2. Get greeks(gamma/vega/theta/delta) data for every minute and 5 minute along with candle data
+	3. Get volume and OI data along with same candles(1/5 minute)
+	4. Get values for NUmber of total bids and its quantities for each contract for same timeline(1/5 minute)
+
+
+It should save data into files like below inside (Data directory)
+1. Parent Directory with name of instrument(Nifty/Banknifty/Sensex)
+2. Subdirectory with expiry date of contract
+3. Inside expiry date directory, for each contract there should be csv file with one sheet containing 1minute data and 2nd sheet contains 5 minute data.
+4. Also there should be separate file with Index data.

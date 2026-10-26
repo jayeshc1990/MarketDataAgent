@@ -1,0 +1,11 @@
+[Unit]
+Description=Start MarketDataAgent Mon-Fri before Indian market open
+
+[Timer]
+# Timezone is explicit, so this works even if the server clock is UTC
+OnCalendar=Mon..Fri *-*-* 09:05:00 Asia/Kolkata
+# If the server was off at 09:05, start as soon as it boots (agent joins mid-session)
+Persistent=true
+
+[Install]
+WantedBy=timers.target

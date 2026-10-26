@@ -1,0 +1,75 @@
+# MarketDataAgent configuration
+# Broker credentials are NOT stored here - put them in a `.env` file (see .env.example).
+
+data_dir: Data
+log_dir: logs
+cache_dir: cache
+
+market:
+  start: "09:15"          # first candle collected (IST)
+  end: "15:40"            # agent stops after a final backfill at this time (IST)
+  weekdays: [0, 1, 2, 3, 4]   # Monday=0 ... Friday=4
+  # Exchange holidays (YYYY-MM-DD). The agent also auto-detects a holiday when no
+  # index candles appear by 09:25, so this list is optional.
+  holidays: []
+  snapshot_offset_seconds: 3   # snapshot is taken this many seconds after each minute closes
+
+broker:
+  name: angelone
+  base_url: https://apiconnect.angelone.in
+  scrip_master_url: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
+
+# Index spot + its futures (futures = nearest-expiry index future, volume & OI)
+indices:
+  NIFTY:
+    spot: {exchange: NSE, token: "99926000"}
+    fno_exchange: NFO
+  BANKNIFTY:
+    spot: {exchange: NSE, token: "99926009"}
+    fno_exchange: NFO
+  SENSEX:
+    spot: {exchange: BSE, token: "99919000"}
+    fno_exchange: BFO
+
+# Other instruments saved as their own index-style files
+extras:
+  INDIAVIX:
+    kind: spot
+    exchange: NSE
+    token: "99926017"
+  CRUDEOIL:
+    kind: future          # nearest-expiry MCX future is picked automatically
+    exchange: MCX
+    name: CRUDEOIL
+    instrument_type: FUTCOM
+
+# Option contract range per index
+#   expiries: integer N  -> the N nearest expiries
+#             list       -> explicit dates, e.g. ["2026-10-28", "2026-11-25"]
+#   strikes_each_side: number of strikes above and below ATM (ATM always included)
+#   option_types: CE and/or PE
+options:
+  NIFTY:
+    expiries: 1
+    strikes_each_side: 10
+    option_types: [CE, PE]
+  BANKNIFTY:
+    expiries: 1
+    strikes_each_side: 10
+    option_types: [CE, PE]
+  SENSEX:
+    expiries: 1
+    strikes_each_side: 10
+    option_types: [CE, PE]
+
+collection:
+  # Add new strikes to the tracked set when the ATM moves during the day
+  track_new_atm_strikes: true
+  # Option candles are fetched round-robin so every contract is refreshed at least
+  # this often (minutes). Keeps the agent inside Angel One's 5000 candle-calls/hour limit.
+  option_candle_refresh_minutes: 5
+
+greeks:
+  source: api_then_local   # api | local | api_then_local (Black-Scholes fallback)
+  risk_free_rate: 0.065
+  dividend_yield: 0.0
