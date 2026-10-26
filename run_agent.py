@@ -19,7 +19,8 @@ from market_agent import runner
 def setup_logging(log_dir: Path):
     log_dir.mkdir(parents=True, exist_ok=True)
     fmt = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
-    logging.Formatter.converter = lambda secs: datetime.fromtimestamp(secs, IST).timetuple()  # IST, even on a UTC server
+    # IST, even on a UTC server (staticmethod: a plain function on the class would receive self)
+    logging.Formatter.converter = staticmethod(lambda secs: datetime.fromtimestamp(secs, IST).timetuple())
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=[
         logging.FileHandler(log_dir / f"agent_{now_ist():%Y-%m-%d}.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
