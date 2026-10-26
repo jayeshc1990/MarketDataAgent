@@ -20,7 +20,9 @@ ROUTES = {
 # (max_calls, window_seconds) - kept slightly under Angel One's published limits
 LIMITS = {
     "login": [(1, 1.0)],
-    "candle": [(2, 1.0), (170, 60.0), (4800, 3600.0)],
+    # Angel One refuses bursts well below its published 3/s, so stay at 1/s
+    # (one cycle needs ~34 candle calls, the end-of-day backfill ~134)
+    "candle": [(1, 1.0), (100, 60.0), (4000, 3600.0)],
     "quote": [(8, 1.0), (450, 60.0), (4800, 3600.0)],
     "greeks": [(1, 1.0), (80, 60.0), (900, 3600.0)],
 }
