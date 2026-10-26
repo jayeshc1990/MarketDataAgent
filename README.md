@@ -99,6 +99,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Volatility & gamma | ATM IV, IV smile now vs earlier, gamma exposure by strike |
 | Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
 | Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
+| Data explorer | every row in a sortable table: Excel-like column filters, or SQL (DuckDB) over `options` and `index_data`, with example queries and CSV download |
 
 Each tab has a "How to read this" note.
 

@@ -81,14 +81,17 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Spot", f"{spot.iloc[-1]:,.2f}", f"{spot.iloc[-1] - spot.iloc[0]:+,.2f} over selection")
 c2.metric("PCR (OI)", f"{pcr['pcr_oi'].iloc[-1]:.2f}", f"{pcr['pcr_oi'].iloc[-1] - pcr['pcr_oi'].iloc[0]:+.2f}")
 c3.metric("Max pain", f"{mpain.iloc[-1]:,.0f}")
-if not straddle.empty:
-    c4.metric("ATM straddle", f"{straddle['straddle'].iloc[-1]:,.1f}",
-              f"{straddle['straddle'].iloc[-1] - straddle['straddle'].iloc[0]:+,.1f}")
-    c5.metric("ATM IV", f"{straddle['atm_iv'].iloc[-1]:.2f}%",
-              f"{straddle['atm_iv'].iloc[-1] - straddle['atm_iv'].iloc[0]:+.2f}")
+# minutes with OI but no candle leave gaps, so the KPIs use the latest bar that has a value
+sv, iv_s = (straddle.get("straddle", pd.Series(dtype=float)).dropna(),
+            straddle.get("atm_iv", pd.Series(dtype=float)).dropna())
+if not sv.empty:
+    c4.metric("ATM straddle", f"{sv.iloc[-1]:,.1f}", f"{sv.iloc[-1] - sv.iloc[0]:+,.1f}")
+if not iv_s.empty:
+    c5.metric("ATM IV", f"{iv_s.iloc[-1]:.2f}%", f"{iv_s.iloc[-1] - iv_s.iloc[0]:+.2f}")
 st.caption(f"Latest bar: {pd.Timestamp(last_t):%a %d %b %H:%M} · PCR / max pain use only the tracked strikes")
 
-tabs = st.tabs(["Overview", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract"])
+tabs = st.tabs(["Overview", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract",
+                "Data explorer"])
 
 # ---------------------------------------------------------------- overview
 with tabs[0]:
@@ -301,3 +304,86 @@ with tabs[5]:
                     legend=dict(orientation="h", yanchor="top", y=-0.07))
     st.plotly_chart(time_axes(f), width="stretch")
     st.download_button("Download this contract (CSV)", d.to_csv(index=False), f"{d['symbol'].iloc[0]}_{tf}.csv")
+
+# ---------------------------------------------------------------- data explorer
+SQL_EXAMPLES = {
+    "Highest OI right now": "SELECT symbol, strike, type, close, oi, iv\nFROM options\n"
+                            "WHERE timestamp = (SELECT max(timestamp) FROM options)\nORDER BY oi DESC",
+    "Biggest 1-bar OI jumps": "SELECT timestamp, symbol, close, oi,\n"
+                              "       oi - lag(oi) OVER (PARTITION BY symbol ORDER BY timestamp) AS oi_change\n"
+                              "FROM options\nORDER BY oi_change DESC NULLS LAST\nLIMIT 50",
+    "Volume per strike per day": "SELECT date, strike, type, sum(volume) AS volume, max(oi) AS max_oi\n"
+                                 "FROM options\nGROUP BY ALL\nORDER BY date, strike, type",
+    "Hourly average IV (ATM area)": "SELECT date_trunc('hour', o.timestamp) AS hour, o.type, avg(o.iv) AS avg_iv\n"
+                                    "FROM options o JOIN index_data i USING (timestamp)\n"
+                                    "WHERE abs(o.strike - i.close) <= 100\nGROUP BY ALL\nORDER BY hour, type",
+    "Bid-heavy minutes (buy qty 2x sell)": "SELECT timestamp, symbol, close, total_buy_qty, total_sell_qty,\n"
+                                           "       round(total_buy_qty / total_sell_qty, 2) AS ratio\n"
+                                           "FROM options\nWHERE total_buy_qty > 2 * total_sell_qty\n"
+                                           "ORDER BY ratio DESC",
+}
+
+
+def _explorer_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["date"] = out["timestamp"].dt.normalize()     # real dates (sortable, SQL-friendly)
+    return out
+
+
+def _filter_ui(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Excel-like filters: pick columns, then a range (numbers / times) or values (text) for each."""
+    cols = st.multiselect("Filter on columns", list(df.columns), key=f"{key}_fcols",
+                          placeholder="e.g. type, strike, oi, timestamp")
+    for c in cols:
+        s = df[c]
+        if pd.api.types.is_datetime64_any_dtype(s):
+            lo_t, hi_t = s.min().to_pydatetime(), s.max().to_pydatetime()
+            if lo_t < hi_t:
+                a, b = st.slider(c, lo_t, hi_t, (lo_t, hi_t), format="DD MMM HH:mm", key=f"{key}_{c}")
+                df = df[df[c].between(a, b)]
+        elif pd.api.types.is_numeric_dtype(s):
+            c1, c2 = st.columns(2)
+            lo_v = c1.number_input(f"{c} ≥", value=float(s.min()) if s.notna().any() else 0.0, key=f"{key}_{c}_lo")
+            hi_v = c2.number_input(f"{c} ≤", value=float(s.max()) if s.notna().any() else 0.0, key=f"{key}_{c}_hi")
+            df = df[df[c].between(lo_v, hi_v)]
+        else:
+            vals = sorted(s.dropna().astype(str).unique())
+            pick = st.multiselect(c, vals, default=vals, key=f"{key}_{c}")
+            df = df[s.astype(str).isin(pick)]
+    return df
+
+
+with tabs[6]:
+    dsets = {"Options (one row per contract per bar)": _explorer_frame(opts)}
+    if not idx.empty:
+        dsets["Index & futures"] = _explorer_frame(idx)
+    c1, c2 = st.columns([1, 2])
+    mode = c1.radio("Mode", ["Filters", "SQL"], horizontal=True)
+
+    if mode == "Filters":
+        ds_name = c2.radio("Dataset", list(dsets), horizontal=True)
+        df = dsets[ds_name]
+        default_cols = [c for c in ["timestamp", "symbol", "strike", "type", "open", "high", "low", "close", "volume",
+                                    "oi", "iv", "delta", "total_buy_qty", "total_sell_qty"] if c in df]
+        show = st.multiselect("Columns", list(df.columns), default=default_cols or list(df.columns))
+        result = _filter_ui(df, ds_name[:5])[show or list(df.columns)]
+    else:
+        import duckdb
+        ex = st.selectbox("Start from an example", ["(write my own)"] + list(SQL_EXAMPLES))
+        default_sql = SQL_EXAMPLES.get(ex, "SELECT *\nFROM options\nWHERE type = 'PE'\nORDER BY oi DESC\nLIMIT 100")
+        sql = st.text_area("SQL (tables: options, index_data)", default_sql, height=170, key=f"sql_{ex}")
+        st.caption("Columns: " + ", ".join(dsets[next(iter(dsets))].columns))
+        try:
+            con = duckdb.connect()
+            con.register("options", dsets[next(iter(dsets))])
+            con.register("index_data", dsets.get("Index & futures", pd.DataFrame({"timestamp": []})))
+            result = con.execute(sql).df()
+        except Exception as e:
+            st.error(f"Query failed: {e}")
+            result = pd.DataFrame()
+
+    st.caption(f"{len(result):,} rows × {len(result.columns)} columns · click a column header to sort · "
+               "use the table's search icon to find text")
+    st.dataframe(result, width="stretch", height=560, hide_index=True)
+    st.download_button("Download these rows (CSV)", result.to_csv(index=False), "query_result.csv",
+                       disabled=result.empty)
