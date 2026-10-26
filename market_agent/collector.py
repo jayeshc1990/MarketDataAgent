@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 CASH_CLOSE = time(15, 30)   # NSE/BSE F&O close; no snapshots for minutes at/after this
 FULL_BACKFILL_MAX_WAIT = 20 * 60   # end-of-day backfill waits out rate limits up to this long
 BACKFILL_SAVE_EVERY = 25           # feeds between saves during a full backfill
+LOT_VOLUME_EXCHANGES = {"NFO", "BFO"}   # REST candle volume is in lots there (seen: 21251 x 65 = stream)
 SPOT_WAIT = 30                     # seconds to wait for a streamed spot price at start-up
 
 INDEX_COLS = ["timestamp", "open", "high", "low", "close", "spot_ltp",
@@ -406,11 +407,13 @@ class Collector:
             if full and done % BACKFILL_SAVE_EVERY == 0:
                 self.store.flush_all()   # save progress, so an interrupted backfill keeps what it got
                 log.info("Backfill: %d/%d feeds done", done, total)
+            # REST candles count F&O volume in lots; the stream, OI and bid/ask qty are in units
+            lots_to_units = (f.contract.lot_size or 1) if f.contract and f.exchange in LOT_VOLUME_EXCHANGES else 1
             for r in rows:
                 ts = _ts(r[0])
                 if ts + pd.Timedelta(minutes=1) > pd.Timestamp(now) or ts < pd.Timestamp(day_start):
                     continue   # skip the still-forming candle / pre-open
-                f.series.update(ts, self._candle_vals(f, r[1], r[2], r[3], r[4], r[5]))
+                f.series.update(ts, self._candle_vals(f, r[1], r[2], r[3], r[4], r[5] * lots_to_units))
 
         log.info("Candles: %d/%d feeds downloaded (%d returned no candles), %d failed, %d left for later",
                  done, total, empty, failed, len(pending))

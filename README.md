@@ -88,6 +88,7 @@ Registers the `MarketDataAgent` task at 09:05 Mon–Fri. The PC must be on (or a
 
 ## Notes / limits
 
+* Volume is in units (contracts x lot size), like OI and bid/ask quantities. Angel One's REST candles report F&O volume in lots; the agent converts them.
 * Live candles are built from ticks: a minute with no trades gets a flat candle at the previous close with volume 0. The minute the agent starts in is skipped (only partly seen), and the first candle's volume is blank until the end-of-day backfill.
 * `collection.mode: poll` is the old REST-only mode; on this account it only keeps up with ~10–15 candle calls per minute.
 * Holidays: weekends are skipped. Exchange holidays are skipped if listed in `config.yaml`, or detected automatically when no index candles appear by 09:25.
