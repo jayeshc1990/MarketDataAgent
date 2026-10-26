@@ -141,7 +141,8 @@ class Collector:
         types = ocfg.get("option_types", ["CE", "PE"])
         for expiry in select_expiries(chain, ocfg.get("expiries", 1)):
             contracts = chain[expiry]
-            for strike in strikes_around(contracts, spot, int(ocfg.get("strikes_each_side", 10))):
+            for strike in strikes_around(contracts, spot, int(ocfg.get("strikes_each_side", 10)),
+                                         ocfg.get("strike_multiple")):
                 for t in types:
                     c = contracts.get((strike, t))
                     if c is None or c.token in self.option_keys:

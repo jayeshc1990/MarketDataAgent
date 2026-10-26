@@ -24,12 +24,13 @@ indices:
   NIFTY:
     spot: {exchange: NSE, token: "99926000"}
     fno_exchange: NFO
-  BANKNIFTY:
-    spot: {exchange: NSE, token: "99926009"}
-    fno_exchange: NFO
-  SENSEX:
-    spot: {exchange: BSE, token: "99919000"}
-    fno_exchange: BFO
+  # Disabled for now (Angel One allows only ~10-15 candle requests/min) - uncomment to re-enable
+  # BANKNIFTY:
+  #   spot: {exchange: NSE, token: "99926009"}
+  #   fno_exchange: NFO
+  # SENSEX:
+  #   spot: {exchange: BSE, token: "99919000"}
+  #   fno_exchange: BFO
 
 # Other instruments saved as their own index-style files
 extras:
@@ -47,20 +48,22 @@ extras:
 #   expiries: integer N  -> the N nearest expiries
 #             list       -> explicit dates, e.g. ["2026-10-28", "2026-11-25"]
 #   strikes_each_side: number of strikes above and below ATM (ATM always included)
+#   strike_multiple: only use strikes divisible by this (e.g. 100 skips 22650); omit for all
 #   option_types: CE and/or PE
 options:
   NIFTY:
     expiries: 1
-    strikes_each_side: 10
+    strikes_each_side: 5        # 11 strikes: ATM +/- 500 points
+    strike_multiple: 100
     option_types: [CE, PE]
-  BANKNIFTY:
-    expiries: 1
-    strikes_each_side: 10
-    option_types: [CE, PE]
-  SENSEX:
-    expiries: 1
-    strikes_each_side: 10
-    option_types: [CE, PE]
+  # BANKNIFTY:
+  #   expiries: 1
+  #   strikes_each_side: 10
+  #   option_types: [CE, PE]
+  # SENSEX:
+  #   expiries: 1
+  #   strikes_each_side: 10
+  #   option_types: [CE, PE]
 
 collection:
   # Add new strikes to the tracked set when the ATM moves during the day

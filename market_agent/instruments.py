@@ -95,8 +95,11 @@ def select_expiries(chain: dict, spec) -> list:
     return [e for e in expiries if e in wanted]
 
 
-def strikes_around(contracts: dict, spot: float, each_side: int) -> list:
+def strikes_around(contracts: dict, spot: float, each_side: int, multiple: float = None) -> list:
+    """ATM strike plus `each_side` strikes above/below; only multiples of `multiple` if given."""
     strikes = sorted({k[0] for k in contracts})
+    if multiple:
+        strikes = [s for s in strikes if abs(s / multiple - round(s / multiple)) < 1e-9]
     if not strikes:
         return []
     atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))

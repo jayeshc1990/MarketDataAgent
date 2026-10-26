@@ -6,7 +6,7 @@ Collects Indian F&O market data from **Angel One SmartAPI** every minute, Mon–
 
 | Instrument | Data |
 |---|---|
-| NIFTY / BANKNIFTY / SENSEX spot | 1-min & 5-min OHLC, LTP |
+| NIFTY / BANKNIFTY / SENSEX spot | 1-min & 5-min OHLC, LTP (default config: NIFTY only, strikes in multiples of 100) |
 | Nearest index future | OHLC, volume, OI, total buy/sell qty |
 | INDIA VIX | OHLC |
 | Crude oil (nearest MCX CRUDEOIL future) | OHLC, volume, OI |
