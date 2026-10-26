@@ -103,3 +103,4 @@ def run_once(cfg, client, master_loader=None) -> None:
     collector.setup(now_ist())
     collector.cycle(now_ist())
     collector.cycle(now_ist(), full=True)
+    log.info("Done - files saved under %s", cfg.data_dir)

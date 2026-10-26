@@ -15,6 +15,7 @@ from .instruments import ScripMaster, select_expiries, strikes_around
 log = logging.getLogger(__name__)
 CASH_CLOSE = time(15, 30)   # NSE/BSE F&O close; no snapshots for minutes at/after this
 FULL_BACKFILL_MAX_WAIT = 20 * 60   # end-of-day backfill waits out rate limits up to this long
+BACKFILL_SAVE_EVERY = 25           # feeds between saves during a full backfill
 
 INDEX_COLS = ["timestamp", "open", "high", "low", "close", "spot_ltp",
               "fut_symbol", "fut_open", "fut_high", "fut_low", "fut_close", "fut_volume",
@@ -39,6 +40,11 @@ class Feed:
     contract: object = None
     underlying: str = ""
     last_fetch: float = field(default=0.0)
+
+    @property
+    def label(self) -> str:
+        sym = self.contract.symbol if self.contract else self.underlying or self.token
+        return f"{sym} ({self.exchange}/{self.token})"
 
 
 def _depth_stats(depth):
@@ -245,6 +251,9 @@ class Collector:
 
         backfill_deadline = _time.monotonic() + FULL_BACKFILL_MAX_WAIT
         pending = list(selected)
+        total, done, empty, failed = len(selected), 0, 0, 0
+        if full:
+            log.info("Backfill: downloading today's candles for %d feeds ...", total)
         while pending:
             f = pending[0]
             last = f.series.last_candle_ts(f.prefix + "close")
@@ -255,16 +264,22 @@ class Collector:
                 # Skipped feeds keep their old last_fetch, so they go first next cycle
                 if not full or e.until > backfill_deadline:
                     log.warning("Candle downloads paused - %d feeds left for a later cycle", len(pending))
-                    return
+                    break
                 log.info("Backfill waiting %.0fs for Angel One rate limit", e.until - _time.monotonic())
                 _time.sleep(max(0.0, e.until - _time.monotonic()) + 1)
                 continue
             except Exception as e:
-                log.warning("Candles failed for %s/%s: %s", f.exchange, f.token, e)
+                log.warning("Candles failed for %s: %s", f.label, e)
                 pending.pop(0)
+                failed += 1
                 continue
             pending.pop(0)
+            done += 1
+            empty += not rows
             f.last_fetch = _time.monotonic()
+            if full and done % BACKFILL_SAVE_EVERY == 0:
+                self.store.flush_all()   # save progress, so an interrupted backfill keeps what it got
+                log.info("Backfill: %d/%d feeds done", done, total)
             for r in rows:
                 ts = _ts(r[0])
                 if ts + pd.Timedelta(minutes=1) > pd.Timestamp(now) or ts < pd.Timestamp(day_start):
@@ -278,6 +293,9 @@ class Collector:
                 elif f.kind == "extra" and f.contract:
                     vals["symbol"] = f.contract.symbol
                 f.series.update(ts, vals)
+
+        log.info("Candles: %d/%d feeds downloaded (%d returned no candles), %d failed, %d left for later",
+                 done, total, empty, failed, len(pending))
 
     def has_index_data_today(self) -> bool:
         day = pd.Timestamp(self.today)
