@@ -53,6 +53,7 @@ class Config:
         self.options = r.get("options") or {}
 
         c = r.get("collection") or {}
+        self.collect_mode = c.get("mode", "stream")
         self.track_new_atm = bool(c.get("track_new_atm_strikes", True))
         self.option_refresh_min = max(1, int(c.get("option_candle_refresh_minutes", 5)))
 

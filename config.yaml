@@ -66,10 +66,14 @@ options:
   #   option_types: [CE, PE]
 
 collection:
+  # stream: 1-min candles built live from Angel One's WebSocket feed (complete, no delay).
+  #         The REST candle API is only used once at the end of the day to replace them with
+  #         the exchange's official candles where it can.
+  # poll:   candles + quotes via REST every minute (limited to ~10-15 candle calls/min).
+  mode: stream
   # Add new strikes to the tracked set when the ATM moves during the day
   track_new_atm_strikes: true
-  # Option candles are fetched round-robin so every contract is refreshed at least
-  # this often (minutes). Keeps the agent inside Angel One's 5000 candle-calls/hour limit.
+  # poll mode only: option candles are fetched round-robin, each contract at least this often
   option_candle_refresh_minutes: 5
 
 greeks:

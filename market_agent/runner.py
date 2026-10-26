@@ -34,7 +34,13 @@ def run_day(cfg, client, master_loader=None) -> None:
     _sleep_until(start - timedelta(minutes=5))
     collector = Collector(cfg, client, Store(), master_loader)
     collector.setup(now_ist())
+    try:
+        _collect_session(cfg, collector, start, end, today)
+    finally:
+        collector.stop()
 
+
+def _collect_session(cfg, collector, start, end, today):
     next_run = max(start + timedelta(minutes=1), now_ist().replace(second=0, microsecond=0) + timedelta(minutes=1))
     holiday_checked = False
     while next_run <= end:
@@ -85,11 +91,14 @@ def run_check(cfg, client) -> bool:
         (f"candles {name} {day}", lambda: client.candles(exch, token, "ONE_MINUTE", start,
                                                          start + timedelta(minutes=15))),
     ]
+    if cfg.collect_mode == "stream":
+        checks.append((f"live stream {name}", lambda: _check_stream(client, exch, token)))
     ok = True
     for label, call in checks:
         try:
             result = call()
-            extra = f" ({len(result)} rows)" if isinstance(result, list) else ""
+            extra = (f" ({len(result)} rows)" if isinstance(result, list)
+                     else f" ({result})" if isinstance(result, str) else "")
             print(f"  OK    {label}{extra}")
         except Exception as e:
             ok = False
@@ -97,10 +106,39 @@ def run_check(cfg, client) -> bool:
     return ok
 
 
-def run_once(cfg, client, master_loader=None) -> None:
-    """Single snapshot + candle backfill right now (ignores market hours) - for testing."""
+def _check_stream(client, exch, token, wait=15):
+    from .stream import MODE_QUOTE
+    got = []
+    stream = client.stream(got.append)
+    stream.subscribe(exch, [token], MODE_QUOTE)
+    stream.start()
+    deadline = _time.monotonic() + wait
+    while not got and _time.monotonic() < deadline:
+        _time.sleep(0.2)
+    stream.stop()
+    if not got:
+        raise RuntimeError(f"no ticks within {wait}s (connected={stream.connected.is_set()})")
+    t = got[-1]
+    when = datetime.fromtimestamp(t["exchange_ts"] / 1000, IST).strftime("%H:%M:%S")
+    return f"ltp={t['ltp']} at {when}"
+
+
+def run_once(cfg, client, master_loader=None, minutes: int = 2) -> None:
+    """Quick test right now (ignores market hours).
+    stream mode: collect live candles for `minutes` complete minutes. poll mode: one cycle + backfill."""
     collector = Collector(cfg, client, Store(), master_loader)
     collector.setup(now_ist())
-    collector.cycle(now_ist())
-    collector.cycle(now_ist(), full=True)
+    try:
+        if collector.stream:
+            first = now_ist().replace(second=0, microsecond=0) + timedelta(minutes=1)
+            log.info("Collecting live candles for %d full minute(s) - first is written at %s",
+                     minutes, (first + timedelta(minutes=1)).strftime("%H:%M:%S"))
+            for i in range(1, minutes + 1):
+                _sleep_until(first + timedelta(minutes=i, seconds=cfg.snapshot_offset))
+                collector.cycle(now_ist())
+        else:
+            collector.cycle(now_ist())
+            collector.cycle(now_ist(), full=True)
+    finally:
+        collector.stop()
     log.info("Done - files saved under %s", cfg.data_dir)

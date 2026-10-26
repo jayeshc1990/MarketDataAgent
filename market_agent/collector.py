@@ -1,4 +1,8 @@
-"""Per-minute collection cycle: candles, quotes (OI / bids / depth) and greeks."""
+"""Per-minute collection cycle: candles, OI / bids / depth and greeks.
+
+stream mode (default): candles are built live from Angel One's WebSocket ticks; the REST candle
+endpoint is only used for the end-of-day backfill. poll mode: candles and quotes via REST.
+"""
 import logging
 import math
 import time as _time
@@ -11,6 +15,8 @@ from .angel_client import RateLimited
 from .config import IST
 from .greeks import greeks as bs_greeks
 from .instruments import ScripMaster, select_expiries, strikes_around
+from .live_candles import CandleBuilder
+from .stream import MODE_QUOTE, MODE_SNAPQUOTE
 
 log = logging.getLogger(__name__)
 CASH_CLOSE = time(15, 30)   # NSE/BSE F&O close; no snapshots for minutes at/after this
@@ -60,6 +66,12 @@ def _depth_stats(depth):
     }
 
 
+def _tick_as_quote(t):
+    """Stream tick -> the REST quote field names the row builders use."""
+    return {"ltp": t.get("ltp"), "opnInterest": t.get("oi"), "totBuyQuan": t.get("total_buy_qty"),
+            "totSellQuan": t.get("total_sell_qty"), "depth": t.get("depth")}
+
+
 def _ts(value) -> pd.Timestamp:
     ts = pd.Timestamp(value)
     if ts.tzinfo is not None:
@@ -78,7 +90,11 @@ class Collector:
         self.spot_feeds = {}           # index name -> Feed
         self.option_keys = set()       # tokens already tracked
         self.chains = {}               # index name -> {expiry: {(strike, type): Contract}}
+        self.by_key = {}               # (exchange, token) -> Feed
         self.today = None
+        self.builder = CandleBuilder()
+        self.stream = None
+        self.last_spot = {}            # index name -> latest spot price
 
     # ------------------------------------------------------------ setup
     def setup(self, now: datetime):
@@ -92,11 +108,11 @@ class Collector:
             series = self.store.get(cfg.data_dir / name / "INDEX" / f"{name}_INDEX_{d}", INDEX_COLS)
             spot = Feed(spec["spot"]["exchange"], spec["spot"]["token"], series,
                         with_volume=False, kind="index", underlying=name)
-            self.feeds.append(spot)
+            self._add_feed(spot)
             self.spot_feeds[name] = spot
             try:
                 fut = master.nearest_future(name, spec["fno_exchange"], self.today)
-                self.feeds.append(Feed(fut.exchange, fut.token, series, prefix="fut_",
+                self._add_feed(Feed(fut.exchange, fut.token, series, prefix="fut_",
                                        kind="future", contract=fut, underlying=name))
                 log.info("%s future: %s", name, fut.symbol)
             except LookupError as e:
@@ -113,17 +129,40 @@ class Collector:
                 except LookupError as e:
                     log.warning("%s", e)
                     continue
-                self.feeds.append(Feed(fut.exchange, fut.token, series, kind="extra", contract=fut))
+                self._add_feed(Feed(fut.exchange, fut.token, series, kind="extra", contract=fut))
                 log.info("%s contract: %s", name, fut.symbol)
             else:
-                self.feeds.append(Feed(spec["exchange"], spec["token"], series,
+                self._add_feed(Feed(spec["exchange"], spec["token"], series,
                                        with_volume=False, kind="extra"))
 
         spots = self._spot_prices()
+        self.last_spot.update({k: v for k, v in spots.items() if v})
         for name in self.chains:
             self._add_option_strikes(name, spots.get(name))
         log.info("Tracking %d feeds (%d option contracts)",
                  len(self.feeds), sum(f.kind == "option" for f in self.feeds))
+
+        if cfg.collect_mode == "stream":
+            self.stream = self.client.stream(self._on_tick)
+            for f in self.feeds:
+                self._subscribe(f)
+            # ticks only cover part of the minute the stream starts in, so that minute is skipped
+            self.stream_start_minute = datetime.now(IST).replace(tzinfo=None, second=0, microsecond=0)
+            self.stream.start()
+
+    def _add_feed(self, feed):
+        self.feeds.append(feed)
+        self.by_key[(feed.exchange, str(feed.token))] = feed
+        if self.stream:
+            self._subscribe(feed)
+
+    def _subscribe(self, f):
+        # spot indices / VIX have no OI or depth, so the lighter Quote mode is enough
+        light = f.kind == "index" or (f.kind == "extra" and not f.contract)
+        self.stream.subscribe(f.exchange, [f.token], MODE_QUOTE if light else MODE_SNAPQUOTE)
+
+    def _on_tick(self, tick):
+        self.builder.on_tick(tick, datetime.now(IST).replace(tzinfo=None))
 
     def _spot_prices(self):
         by_exch = {}
@@ -148,7 +187,7 @@ class Collector:
                     if c is None or c.token in self.option_keys:
                         continue
                     base = self.cfg.data_dir / name / expiry.isoformat() / c.symbol
-                    self.feeds.append(Feed(c.exchange, c.token, self.store.get(base, OPTION_COLS),
+                    self._add_feed(Feed(c.exchange, c.token, self.store.get(base, OPTION_COLS),
                                            kind="option", contract=c, underlying=name))
                     self.option_keys.add(c.token)
                     log.info("Tracking %s", c.symbol)
@@ -156,11 +195,62 @@ class Collector:
     # ------------------------------------------------------------ cycle
     def cycle(self, now: datetime, full: bool = False):
         now = now.replace(tzinfo=None, microsecond=0)
-        snap_ts = pd.Timestamp(now).floor("min") - pd.Timedelta(minutes=1)
-        if not full and snap_ts.time() < CASH_CLOSE:
-            self._snapshot(now, snap_ts)
-        self._candles(now, full)
+        if full:
+            self._candles(now, full=True)
+        elif self.stream:
+            self._stream_cycle(now)
+        else:
+            snap_ts = pd.Timestamp(now).floor("min") - pd.Timedelta(minutes=1)
+            if snap_ts.time() < CASH_CLOSE:
+                self._snapshot(now, snap_ts)
+            self._candles(now, full=False)
         self.store.flush_all()
+
+    def stop(self):
+        if self.stream:
+            self.stream.stop()
+
+    def _stream_cycle(self, now):
+        upto = now.replace(second=0)
+        bars_by_key = self.builder.collect(upto)
+        if not bars_by_key:
+            state = "connected" if self.stream.connected.is_set() else "NOT connected"
+            log.warning("No live ticks for the last minute (stream %s, %d ticks so far)",
+                        state, self.stream.ticks)
+            return
+        day_start = datetime.combine(now.date(), self.cfg.market_start)
+        latest = upto - timedelta(minutes=1)
+
+        spot_at = {}                     # (index name, minute) -> spot close
+        for name, f in self.spot_feeds.items():
+            for b in bars_by_key.get((f.exchange, str(f.token)), []):
+                spot_at[(name, b["minute"])] = b["close"]
+                self.last_spot[name] = b["close"]
+        needs_greeks = any(self.by_key[k].kind == "option" for k in bars_by_key if k in self.by_key)
+        api_greeks = self._api_greeks(now) if needs_greeks and latest.time() < CASH_CLOSE else {}
+
+        rows = 0
+        for key, bars in bars_by_key.items():
+            f = self.by_key.get(key)
+            if f is None:
+                continue
+            for b in bars:
+                m = b["minute"]
+                if m < day_start or m <= self.stream_start_minute                         or (m.time() >= CASH_CLOSE and f.exchange != "MCX"):
+                    continue             # pre-open / partial first minute / after the F&O close
+                f.series.update(m, self._candle_vals(f, b["open"], b["high"], b["low"],
+                                                     b["close"], b["volume"]))
+                q = dict(_tick_as_quote(b["last"]), ltp=b["close"])
+                spot = spot_at.get((f.underlying, m), self.last_spot.get(f.underlying))
+                self._write_snapshot(f, m, q, spot, now, api_greeks if m == latest else {})
+                rows += 1
+        log.info("Live candles: %d rows for %d instruments up to %s (%d ticks so far)",
+                 rows, len(bars_by_key), latest.strftime("%H:%M"), self.stream.ticks)
+
+        if self.cfg.track_new_atm:
+            for name in self.chains:
+                if self.last_spot.get(name):
+                    self._add_option_strikes(name, self.last_spot[name])
 
     def _snapshot(self, now, snap_ts):
         by_exch = {}
@@ -184,30 +274,44 @@ class Collector:
 
         for f in self.feeds:
             q = quotes.get((f.exchange, str(f.token)))
-            if not q or f.kind == "index":
-                continue
-            if f.kind == "future":
-                f.series.update(snap_ts, {
-                    "fut_symbol": f.contract.symbol, "fut_ltp": q.get("ltp"),
-                    "fut_oi": q.get("opnInterest"),
-                    "fut_total_buy_qty": q.get("totBuyQuan"), "fut_total_sell_qty": q.get("totSellQuan")})
-            elif f.kind == "extra":
-                f.series.update(snap_ts, {
-                    "symbol": f.contract.symbol if f.contract else q.get("tradingSymbol"),
-                    "ltp": q.get("ltp"), "oi": q.get("opnInterest") or None})
-            else:
-                c = f.contract
-                row = {"ltp": q.get("ltp"), "oi": q.get("opnInterest"),
-                       "total_buy_qty": q.get("totBuyQuan"), "total_sell_qty": q.get("totSellQuan"),
-                       "underlying_spot": spots.get(f.underlying)}
-                row.update(_depth_stats(q.get("depth")))
-                row.update(self._greeks_for(c, q.get("ltp"), spots.get(f.underlying), now, api_greeks))
-                f.series.update(snap_ts, row)
+            if q and f.kind != "index":
+                self._write_snapshot(f, snap_ts, q, spots.get(f.underlying), now, api_greeks)
 
         if self.cfg.track_new_atm:
             for name in self.chains:
                 if spots.get(name):
                     self._add_option_strikes(name, spots[name])
+
+    def _write_snapshot(self, f, ts, q, spot, now, api_greeks):
+        """OI / bids / depth / greeks columns from a REST quote (or a tick shaped like one)."""
+        if f.kind == "index":
+            f.series.update(ts, {"spot_ltp": q.get("ltp")})
+        elif f.kind == "future":
+            f.series.update(ts, {
+                "fut_symbol": f.contract.symbol, "fut_ltp": q.get("ltp"),
+                "fut_oi": q.get("opnInterest"),
+                "fut_total_buy_qty": q.get("totBuyQuan"), "fut_total_sell_qty": q.get("totSellQuan")})
+        elif f.kind == "extra":
+            f.series.update(ts, {
+                "symbol": f.contract.symbol if f.contract else q.get("tradingSymbol"),
+                "ltp": q.get("ltp"), "oi": q.get("opnInterest") or None})
+        else:
+            row = {"ltp": q.get("ltp"), "oi": q.get("opnInterest"),
+                   "total_buy_qty": q.get("totBuyQuan"), "total_sell_qty": q.get("totSellQuan"),
+                   "underlying_spot": spot}
+            row.update(_depth_stats(q.get("depth")))
+            row.update(self._greeks_for(f.contract, q.get("ltp"), spot, now, api_greeks))
+            f.series.update(ts, row)
+
+    def _candle_vals(self, f, o, h, l, c, v):
+        vals = {f.prefix + "open": o, f.prefix + "high": h, f.prefix + "low": l, f.prefix + "close": c}
+        if f.with_volume and v is not None:
+            vals[f.prefix + "volume"] = v
+        if f.kind == "future":
+            vals["fut_symbol"] = f.contract.symbol
+        elif f.kind == "extra" and f.contract:
+            vals["symbol"] = f.contract.symbol
+        return vals
 
     def _api_greeks(self, now):
         out = {}
@@ -285,15 +389,7 @@ class Collector:
                 ts = _ts(r[0])
                 if ts + pd.Timedelta(minutes=1) > pd.Timestamp(now) or ts < pd.Timestamp(day_start):
                     continue   # skip the still-forming candle / pre-open
-                vals = {f.prefix + "open": r[1], f.prefix + "high": r[2],
-                        f.prefix + "low": r[3], f.prefix + "close": r[4]}
-                if f.with_volume:
-                    vals[f.prefix + "volume"] = r[5]
-                if f.kind == "future":
-                    vals["fut_symbol"] = f.contract.symbol
-                elif f.kind == "extra" and f.contract:
-                    vals["symbol"] = f.contract.symbol
-                f.series.update(ts, vals)
+                f.series.update(ts, self._candle_vals(f, r[1], r[2], r[3], r[4], r[5]))
 
         log.info("Candles: %d/%d feeds downloaded (%d returned no candles), %d failed, %d left for later",
                  done, total, empty, failed, len(pending))

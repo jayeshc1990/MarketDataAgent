@@ -2,6 +2,12 @@
 
 Collects Indian F&O market data from **Angel One SmartAPI** every minute, Mon–Fri, 09:15–15:40 IST.
 
+**How (default `collection.mode: stream`):** one WebSocket connection streams live ticks (price, day volume,
+OI, total buy/sell qty, best-5 depth) for every tracked instrument. The agent builds each 1-min candle itself
+and writes it a few seconds after the minute closes, so every minute is complete and current. Greeks come from
+the REST greeks API once a minute. At 15:40 the REST candle API replaces the day's candles with the
+exchange's official ones where Angel One allows it (it limits candle calls to ~10–15/min).
+
 ## What is collected
 
 | Instrument | Data |
@@ -82,7 +88,8 @@ Registers the `MarketDataAgent` task at 09:05 Mon–Fri. The PC must be on (or a
 
 ## Notes / limits
 
-* Angel One allows ~5000 candle requests/hour, so option candles are refreshed round-robin (every contract at least every `option_candle_refresh_minutes`, default 5). All candles are backfilled at 15:40, so the files are complete at the end of the day. Index, futures, VIX and crude candles are refreshed every minute.
+* Live candles are built from ticks: a minute with no trades gets a flat candle at the previous close with volume 0. The minute the agent starts in is skipped (only partly seen), and the first candle's volume is blank until the end-of-day backfill.
+* `collection.mode: poll` is the old REST-only mode; on this account it only keeps up with ~10–15 candle calls per minute.
 * Holidays: weekends are skipped. Exchange holidays are skipped if listed in `config.yaml`, or detected automatically when no index candles appear by 09:25.
 * Contracts are picked around the ATM at start-up. With `track_new_atm_strikes: true`, new strikes are added when the index moves.
 * If a CSV is open in Excel, it cannot be written to; the agent retries on the next cycle.

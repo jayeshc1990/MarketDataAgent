@@ -170,7 +170,14 @@ class AngelClient:
             "totp": totp,
         })
         self.jwt = data["jwtToken"]
+        self.feed_token = data.get("feedToken")
         log.info("Logged in to Angel One as %s", self.creds["ANGEL_CLIENT_CODE"])
+
+    def stream(self, on_tick):
+        from .stream import AngelStream
+        return AngelStream(lambda: {"jwt": self.jwt, "api_key": self.creds["ANGEL_API_KEY"],
+                                    "client_code": self.creds["ANGEL_CLIENT_CODE"],
+                                    "feed_token": self.feed_token}, on_tick)
 
     def candles(self, exchange: str, token: str, interval: str, start: datetime, end: datetime):
         """Return list of [iso_ts, open, high, low, close, volume]."""
