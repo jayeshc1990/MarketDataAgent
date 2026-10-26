@@ -1,0 +1,16 @@
+[Unit]
+Description=MarketDataAgent analysis dashboard (Streamlit, localhost only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__
+# Bound to 127.0.0.1: reach it through an SSH tunnel, it is never exposed to the internet
+ExecStart=__APP_DIR__/.venv/bin/streamlit run analysis/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

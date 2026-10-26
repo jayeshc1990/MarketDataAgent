@@ -1,0 +1,303 @@
+"""MarketDataAgent analysis dashboard.
+
+    streamlit run analysis/app.py            # data_dir from config.yaml
+    MDA_DATA_DIR=/path/to/Data streamlit run analysis/app.py
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from analysis import data as D  # noqa: E402
+
+st.set_page_config(page_title="NIFTY Options Analysis", layout="wide")
+
+CE_COLOR, PE_COLOR, SPOT_COLOR = "#2a9d8f", "#e76f51", "#264653"
+BUILDUP_COLORS = {"Long build-up": "#2a9d8f", "Short covering": "#8ecae6",
+                  "Short build-up": "#e76f51", "Long unwinding": "#f4a261"}
+# hide nights and weekends on time axes
+RANGEBREAKS = [dict(bounds=["sat", "mon"]), dict(bounds=[15.5, 9.25], pattern="hour")]
+
+
+def time_axes(fig):
+    fig.update_xaxes(rangebreaks=RANGEBREAKS)
+    return fig
+
+
+@st.cache_data(show_spinner="Loading data ...")
+def load(root: str, underlying: str, expiry: str, tf: str, _sig):
+    opts = D.load_options(Path(root), underlying, expiry, tf)
+    idx = D.load_index(Path(root), underlying, opts["date"].unique() if not opts.empty else [], tf)
+    return opts, idx
+
+
+@st.cache_data(show_spinner="Computing metrics ...")
+def metrics(opts, idx):
+    spot = D.spot_series(opts, idx)
+    return spot, D.pcr(opts), D.max_pain(opts), D.atm_straddle(opts, spot), D.order_flow(opts, spot)
+
+
+# ---------------------------------------------------------------- sidebar
+root = D.data_root()
+st.sidebar.title("Selection")
+unders = D.list_underlyings(root)
+if not unders:
+    st.error(f"No collected data found in {root}")
+    st.stop()
+underlying = st.sidebar.selectbox("Index", unders)
+expiry = st.sidebar.selectbox("Expiry", D.list_expiries(root, underlying))
+tf = st.sidebar.radio("Candle", ["1min", "5min"], horizontal=True)
+opts_all, idx_all = load(str(root), underlying, expiry, tf, D.files_signature(root / underlying / expiry))
+if opts_all.empty:
+    st.warning("No option files for this expiry yet.")
+    st.stop()
+
+days = sorted(opts_all["date"].unique())
+sel_days = st.sidebar.multiselect("Trading days", days, default=days,
+                                  format_func=lambda d: d.strftime("%a %d %b"))
+if not sel_days:
+    st.stop()
+strikes = sorted(opts_all["strike"].unique())
+lo, hi = st.sidebar.select_slider("Strikes", strikes, value=(strikes[0], strikes[-1]),
+                                  format_func=lambda k: f"{k:,.0f}")
+opts = opts_all[opts_all["date"].isin(sel_days) & opts_all["strike"].between(lo, hi)]
+idx = idx_all[idx_all["date"].isin(sel_days)] if not idx_all.empty else idx_all
+if opts.empty:
+    st.stop()
+spot, pcr, mpain, straddle, flow = metrics(opts, idx)
+times = sorted(opts["timestamp"].unique())
+st.sidebar.caption(f"{len(opts['symbol'].unique())} contracts · {len(times)} bars · data: {root}")
+
+# ---------------------------------------------------------------- header KPIs
+last_t = times[-1]
+st.title(f"{underlying} · expiry {pd.Timestamp(expiry):%d %b %Y}")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Spot", f"{spot.iloc[-1]:,.2f}", f"{spot.iloc[-1] - spot.iloc[0]:+,.2f} over selection")
+c2.metric("PCR (OI)", f"{pcr['pcr_oi'].iloc[-1]:.2f}", f"{pcr['pcr_oi'].iloc[-1] - pcr['pcr_oi'].iloc[0]:+.2f}")
+c3.metric("Max pain", f"{mpain.iloc[-1]:,.0f}")
+if not straddle.empty:
+    c4.metric("ATM straddle", f"{straddle['straddle'].iloc[-1]:,.1f}",
+              f"{straddle['straddle'].iloc[-1] - straddle['straddle'].iloc[0]:+,.1f}")
+    c5.metric("ATM IV", f"{straddle['atm_iv'].iloc[-1]:.2f}%",
+              f"{straddle['atm_iv'].iloc[-1] - straddle['atm_iv'].iloc[0]:+.2f}")
+st.caption(f"Latest bar: {pd.Timestamp(last_t):%a %d %b %H:%M} · PCR / max pain use only the tracked strikes")
+
+tabs = st.tabs(["Overview", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract"])
+
+# ---------------------------------------------------------------- overview
+with tabs[0]:
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.45, 0.18, 0.18, 0.19],
+                        subplot_titles=["Spot, futures and max pain", "Futures OI", "Put-call ratio (OI)",
+                                        "ATM straddle premium"])
+    if not idx.empty:
+        fig.add_trace(go.Candlestick(x=idx["timestamp"], open=idx["open"], high=idx["high"], low=idx["low"],
+                                     close=idx["close"], name="Spot"), row=1, col=1)
+        if "fut_close" in idx:
+            fig.add_trace(go.Scatter(x=idx["timestamp"], y=idx["fut_close"], name="Futures",
+                                     line=dict(width=1, color="#8d99ae")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=idx["timestamp"], y=idx["fut_oi"], name="Futures OI",
+                                     line=dict(color="#6a4c93")), row=2, col=1)
+    else:
+        fig.add_trace(go.Scatter(x=spot.index, y=spot, name="Spot", line=dict(color=SPOT_COLOR)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=mpain.index, y=mpain, name="Max pain", line=dict(dash="dot", color="#bc4749"),
+                             line_shape="hv"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=pcr.index, y=pcr["pcr_oi"], name="PCR", line=dict(color="#386641")), row=3, col=1)
+    fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=3, col=1)
+    if not straddle.empty:
+        fig.add_trace(go.Scatter(x=straddle.index, y=straddle["straddle"], name="ATM straddle",
+                                 line=dict(color="#d4a373")), row=4, col=1)
+    fig.update_layout(height=900, xaxis_rangeslider_visible=False, margin=dict(t=40, b=20),
+                      legend=dict(orientation="h", yanchor="top", y=-0.07))
+    st.plotly_chart(time_axes(fig), width="stretch")
+    with st.expander("How to read this"):
+        st.markdown(
+            "- **Max pain** is the strike where option writers lose least at expiry. Spot is often pulled "
+            "towards it in the last sessions before expiry.\n"
+            "- **PCR above 1**: more put OI than call OI. Put writers are confident of support, which is usually "
+            "read as bullish; a falling PCR is the opposite.\n"
+            "- **Futures OI rising with price** points to fresh longs; rising while price falls points to fresh shorts.\n"
+            "- **ATM straddle** shows how much movement the market is pricing in. It decays with time; when it "
+            "*rises* while spot moves, traders are paying up for the move.")
+
+# ---------------------------------------------------------------- open interest
+with tabs[1]:
+    since = st.radio("OI change measured from", ["start of each day", "start of selection"], horizontal=True)
+    since_key = "day" if since.startswith("start of each") else "selection"
+    cols = st.columns(2)
+    for col, typ in ((cols[0], "CE"), (cols[1], "PE")):
+        m = D.oi_change_matrix(opts, typ, since_key)
+        hm = go.Figure(go.Heatmap(z=m.values, x=m.columns, y=m.index, zmid=0, colorbar=dict(title="OI chg"),
+                                  colorscale=[[0, "#2166ac"], [0.5, "#f7f7f7"], [1, "#b2182b"]]))
+        hm.add_trace(go.Scatter(x=spot.index, y=spot, name="Spot", line=dict(color="black", width=1.5)))
+        hm.update_layout(title=f"{typ} OI change by strike (red = OI added, blue = OI cut)", height=450,
+                         yaxis_title="Strike", showlegend=False, margin=dict(t=50, b=20))
+        col.plotly_chart(time_axes(hm), width="stretch")
+
+    t_sel = st.select_slider("Snapshot time", times, value=times[-1],
+                             format_func=lambda t: pd.Timestamp(t).strftime("%d %b %H:%M"))
+    day_start = min(t for t in times if pd.Timestamp(t).date() == pd.Timestamp(t_sel).date())
+    snap = opts[opts["timestamp"] == t_sel].pivot_table(index="strike", columns="type", values="oi")
+    base = opts[opts["timestamp"] == day_start].pivot_table(index="strike", columns="type", values="oi")
+    bar = go.Figure()
+    for typ, color in (("CE", CE_COLOR), ("PE", PE_COLOR)):
+        if typ in snap:
+            bar.add_trace(go.Bar(x=snap.index, y=snap[typ], name=f"{typ} OI", marker_color=color))
+            bar.add_trace(go.Bar(x=snap.index, y=snap[typ] - base.get(typ, 0), name=f"{typ} change today",
+                                 marker_color=color, opacity=0.45, marker_pattern_shape="/"))
+    sp_t = spot.get(t_sel, np.nan)
+    bar.add_vline(x=sp_t, line=dict(color="black", dash="dash"), annotation_text=f"spot {sp_t:,.0f}")
+    bar.update_layout(barmode="group", height=420, title=f"OI by strike at {pd.Timestamp(t_sel):%d %b %H:%M}",
+                      xaxis_title="Strike", margin=dict(t=50, b=20))
+    st.plotly_chart(bar, width="stretch")
+    with st.expander("How to read this"):
+        st.markdown(
+            "- The strike with the **largest CE OI** often acts as **resistance**, and the largest **PE OI** as "
+            "**support**, because writers defend those levels.\n"
+            "- In the heatmaps, watch for **red bands forming just below spot on the PE side** (support being "
+            "built) or **just above spot on the CE side** (resistance being built). Blue bands mean writers are "
+            "exiting, so that level is weakening.")
+
+# ---------------------------------------------------------------- build-up
+with tabs[2]:
+    c1, c2 = st.columns([2, 1])
+    t0, t1 = c1.select_slider("Window", times, value=(times[0], times[-1]),
+                              format_func=lambda t: pd.Timestamp(t).strftime("%d %b %H:%M"))
+    bu = D.buildup(opts, t0, t1)
+    if not bu.empty:
+        summary = bu.groupby(["type", "buildup"])["oi_chg"].agg(["count", "sum"]).reset_index()
+        c2.dataframe(summary.rename(columns={"count": "contracts", "sum": "OI change"}), hide_index=True)
+        fig = px.bar(bu, x="strike", y="oi_chg", color="buildup", facet_row="type", barmode="relative",
+                     color_discrete_map=BUILDUP_COLORS, height=480,
+                     hover_data={"price_chg_%": ":.1f", "oi_chg_%": ":.1f"},
+                     title=f"Build-up per strike, {pd.Timestamp(t0):%d %b %H:%M} → {pd.Timestamp(t1):%d %b %H:%M}")
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(bu.round(2), hide_index=True, width="stretch")
+
+    window = st.slider("Rolling window for the timeline (bars)", 3, 60, 15)
+    cats = list(BUILDUP_COLORS)
+    for typ in ("CE", "PE"):
+        lab = D.buildup_timeline(opts, typ, window)
+        z = lab.apply(lambda s: s.map({c: i for i, c in enumerate(cats)})).astype(float)
+        colorscale = []
+        for i, c in enumerate(cats):
+            colorscale += [[i / len(cats), BUILDUP_COLORS[c]], [(i + 1) / len(cats), BUILDUP_COLORS[c]]]
+        hm = go.Figure(go.Heatmap(z=z.values, x=z.columns, y=z.index, colorscale=colorscale, zmin=0,
+                                  zmax=len(cats), customdata=lab.values,
+                                  hovertemplate="%{x}<br>strike %{y}<br>%{customdata}<extra></extra>",
+                                  colorbar=dict(tickvals=[i + 0.5 for i in range(len(cats))], ticktext=cats)))
+        hm.update_layout(title=f"{typ} build-up timeline (last {window} bars at each point)", height=380,
+                         yaxis_title="Strike", margin=dict(t=50, b=20))
+        st.plotly_chart(time_axes(hm), width="stretch")
+    with st.expander("How to read this"):
+        st.markdown(
+            "| Price | OI | Label | Meaning |\n|---|---|---|---|\n"
+            "| ↑ | ↑ | Long build-up | fresh buyers |\n| ↓ | ↑ | Short build-up | fresh writers/sellers |\n"
+            "| ↑ | ↓ | Short covering | sellers exiting (squeeze) |\n| ↓ | ↓ | Long unwinding | buyers exiting |\n\n"
+            "**Short build-up in PEs** below spot = put writers building support (bullish). "
+            "**Short build-up in CEs** above spot = call writers capping the upside (bearish). "
+            "A switch to **short covering** at those strikes often comes before a breakout through them.")
+
+# ---------------------------------------------------------------- volatility & gamma
+with tabs[3]:
+    c1, c2 = st.columns(2)
+    if not straddle.empty:
+        f = go.Figure(go.Scatter(x=straddle.index, y=straddle["atm_iv"], name="ATM IV", line=dict(color="#6a4c93")))
+        f.update_layout(title="ATM implied volatility (%)", height=380, margin=dict(t=50, b=20))
+        c1.plotly_chart(time_axes(f), width="stretch")
+    t_sel = c2.select_slider("Smile / gamma time", times, value=times[-1], key="iv_t",
+                             format_func=lambda t: pd.Timestamp(t).strftime("%d %b %H:%M"))
+    t_ref = c2.select_slider("Compare with", times, value=times[0], key="iv_ref",
+                             format_func=lambda t: pd.Timestamp(t).strftime("%d %b %H:%M"))
+    f = go.Figure()
+    for t, dash in ((t_ref, "dot"), (t_sel, "solid")):
+        sm = D.smile(opts, t)
+        for typ, color in (("CE", CE_COLOR), ("PE", PE_COLOR)):
+            if typ in sm:
+                f.add_trace(go.Scatter(x=sm.index, y=sm[typ], name=f"{typ} {pd.Timestamp(t):%d %b %H:%M}",
+                                       line=dict(color=color, dash=dash)))
+    f.add_vline(x=spot.get(t_sel, np.nan), line=dict(color="black", dash="dash"))
+    f.update_layout(title="IV smile (dotted = comparison time)", height=380, xaxis_title="Strike",
+                    margin=dict(t=50, b=20))
+    c2.plotly_chart(f, width="stretch")
+
+    sp_t = spot.get(t_sel, np.nan)
+    gex = D.gamma_exposure(opts, t_sel, sp_t) / 1e7
+    f = go.Figure(go.Bar(x=gex.index, y=gex.values, marker_color=np.where(gex.values >= 0, CE_COLOR, PE_COLOR)))
+    f.add_vline(x=sp_t, line=dict(color="black", dash="dash"), annotation_text=f"spot {sp_t:,.0f}")
+    f.update_layout(title=f"Gamma exposure by strike (Rs crore per 1% move) at {pd.Timestamp(t_sel):%d %b %H:%M}"
+                          f" · net {gex.sum():+,.1f}", height=380, xaxis_title="Strike", margin=dict(t=50, b=20))
+    st.plotly_chart(f, width="stretch")
+    with st.expander("How to read this"):
+        st.markdown(
+            "- **ATM IV rising** while spot moves means traders are paying for the move; **IV falling** "
+            "into expiry is normal decay.\n"
+            "- A **steeper put side** of the smile means downside protection is in demand.\n"
+            "- **Gamma exposure** assumes option writers are short. A large **positive** net means hedgers buy "
+            "dips and sell rallies, so the market tends to stay range-bound. **Negative** means they chase moves, "
+            "so moves tend to accelerate. Strikes with large bars act like magnets or walls.")
+
+# ---------------------------------------------------------------- order flow
+with tabs[4]:
+    f = make_subplots(specs=[[{"secondary_y": True}]])
+    f.add_trace(go.Scatter(x=flow.index, y=flow["signal"].rolling(5, min_periods=1).mean(),
+                           name="Flow signal (5-bar avg)", line=dict(color="#6a4c93")), secondary_y=False)
+    f.add_trace(go.Scatter(x=flow.index, y=flow["spot"], name="Spot", line=dict(color=SPOT_COLOR, width=1)),
+                secondary_y=True)
+    f.add_hline(y=0, line=dict(color="grey", width=1))
+    f.update_layout(title="Call bid pressure minus put bid pressure", height=420, margin=dict(t=50, b=20))
+    st.plotly_chart(time_axes(f), width="stretch")
+    c1, c2 = st.columns(2)
+    ll = D.lead_lag(flow)
+    bars = go.Figure(go.Bar(x=ll.index, y=ll.values, marker_color=np.where(ll.values >= 0, CE_COLOR, PE_COLOR)))
+    bars.update_layout(title="Does the flow signal predict spot? Correlation with the next N-bar return",
+                       xaxis_title="N bars ahead", yaxis_title="correlation", height=380, margin=dict(t=50, b=20))
+    c1.plotly_chart(bars, width="stretch")
+    best = int(ll.abs().idxmax()) if ll.notna().any() else 5
+    n = c2.slider("Bars ahead for scatter", 1, 30, best)
+    fwd = flow["spot"].groupby(flow.index.date).shift(-n) / flow["spot"] - 1
+    sc = pd.DataFrame({"signal": flow["signal"], "fwd_return_%": fwd * 100}).dropna()
+    c2.plotly_chart(px.scatter(sc, x="signal", y="fwd_return_%", trendline=None, opacity=0.4, height=380,
+                               title=f"Flow signal vs next {n}-bar spot return (%)"), width="stretch")
+    with st.expander("How to read this"):
+        st.markdown(
+            "The signal compares **pending buy vs sell quantity** in calls with the same in puts. "
+            "+1 means calls are being bid and puts offered (bullish pressure).\n\n"
+            "The correlation chart tests whether this pressure **comes before** price moves. A clear peak "
+            "(for example +0.2 at 5 bars) is a pattern worth tracking across expiries; values near 0 mean no "
+            "edge in this selection. Check that a pattern repeats across several days before trusting it.")
+
+# ---------------------------------------------------------------- single contract
+with tabs[5]:
+    c1, c2 = st.columns(2)
+    k = c1.selectbox("Strike", sorted(opts["strike"].unique()),
+                     index=int(np.argmin(np.abs(np.array(sorted(opts["strike"].unique())) - spot.iloc[-1]))),
+                     format_func=lambda v: f"{v:,.0f}")
+    typ = c2.radio("Type", ["CE", "PE"], horizontal=True)
+    d = opts[(opts["strike"] == k) & (opts["type"] == typ)]
+    f = make_subplots(rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                      row_heights=[0.36, 0.14, 0.16, 0.17, 0.17],
+                      subplot_titles=["Price", "Volume", "Open interest", "IV (left) and delta (right)",
+                                      "Total buy / sell quantity (log scale; above 1 = more bids)"],
+                      specs=[[{}], [{}], [{}], [{"secondary_y": True}], [{}]])
+    f.add_trace(go.Candlestick(x=d["timestamp"], open=d["open"], high=d["high"], low=d["low"], close=d["close"],
+                               name="Price"), row=1, col=1)
+    f.add_trace(go.Bar(x=d["timestamp"], y=d["volume"], name="Volume", marker_color="#8d99ae"), row=2, col=1)
+    f.add_trace(go.Scatter(x=d["timestamp"], y=d["oi"], name="OI", line=dict(color="#6a4c93")), row=3, col=1)
+    f.add_trace(go.Scatter(x=d["timestamp"], y=d["iv"], name="IV %", line=dict(color="#bc4749")), row=4, col=1)
+    f.add_trace(go.Scatter(x=d["timestamp"], y=d["delta"], name="Delta", line=dict(color="#386641")),
+                row=4, col=1, secondary_y=True)
+    ratio = d["total_buy_qty"] / d["total_sell_qty"]
+    f.add_trace(go.Scatter(x=d["timestamp"], y=ratio, name="Buy/sell qty", line=dict(color="#d4a373")), row=5, col=1)
+    f.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=5, col=1)
+    f.update_yaxes(type="log", row=5, col=1)
+    f.update_layout(height=1000, xaxis_rangeslider_visible=False, margin=dict(t=40, b=20),
+                    legend=dict(orientation="h", yanchor="top", y=-0.07))
+    st.plotly_chart(time_axes(f), width="stretch")
+    st.download_button("Download this contract (CSV)", d.to_csv(index=False), f"{d['symbol'].iloc[0]}_{tf}.csv")

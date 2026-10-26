@@ -86,6 +86,34 @@ powershell -ExecutionPolicy Bypass -File install_task.ps1
 ```
 Registers the `MarketDataAgent` task at 09:05 Mon–Fri. The PC must be on (or able to wake) and logged in to the network.
 
+## Analysis dashboard
+
+A web dashboard (`analysis/app.py`, Streamlit + Plotly) for exploring one expiry at a time. Pick the index,
+expiry, trading days, 1/5-min candles and strike range in the sidebar.
+
+| Tab | What it shows |
+|---|---|
+| Overview | spot candles + futures + max pain, futures OI, put-call ratio, ATM straddle premium |
+| Open interest | CE / PE OI-change heatmaps (strike x time, spot overlaid), OI by strike at any moment |
+| Build-up | long/short build-up, short covering, long unwinding per strike for any window, plus a timeline |
+| Volatility & gamma | ATM IV, IV smile now vs earlier, gamma exposure by strike |
+| Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
+| Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
+
+Each tab has a "How to read this" note.
+
+**Install on the server** (once, after `setup_ubuntu.sh`):
+```bash
+bash deploy/setup_ui.sh
+```
+It runs as the `marketdataui` service, listening only on the server itself (127.0.0.1:8501).
+To open it, start an SSH tunnel from your PC and browse to http://localhost:8501:
+```bash
+ssh -L 8501:localhost:8501 root@<server-ip>
+```
+
+Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streamlit run analysis/app.py`.
+
 ## Notes / limits
 
 * Volume is in units (contracts x lot size), like OI and bid/ask quantities. Angel One's REST candles report F&O volume in lots; the agent converts them.
