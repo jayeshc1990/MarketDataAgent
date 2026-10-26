@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 CASH_CLOSE = time(15, 30)   # NSE/BSE F&O close; no snapshots for minutes at/after this
 FULL_BACKFILL_MAX_WAIT = 20 * 60   # end-of-day backfill waits out rate limits up to this long
 BACKFILL_SAVE_EVERY = 25           # feeds between saves during a full backfill
+SPOT_WAIT = 30                     # seconds to wait for a streamed spot price at start-up
 
 INDEX_COLS = ["timestamp", "open", "high", "low", "close", "spot_ltp",
               "fut_symbol", "fut_open", "fut_high", "fut_low", "fut_close", "fut_volume",
@@ -95,6 +96,7 @@ class Collector:
         self.builder = CandleBuilder()
         self.stream = None
         self.last_spot = {}            # index name -> latest spot price
+        self.last_ltp = {}             # (exchange, token) -> latest streamed price
 
     # ------------------------------------------------------------ setup
     def setup(self, now: datetime):
@@ -135,20 +137,21 @@ class Collector:
                 self._add_feed(Feed(spec["exchange"], spec["token"], series,
                                        with_volume=False, kind="extra"))
 
-        spots = self._spot_prices()
-        self.last_spot.update({k: v for k, v in spots.items() if v})
-        for name in self.chains:
-            self._add_option_strikes(name, spots.get(name))
-        log.info("Tracking %d feeds (%d option contracts)",
-                 len(self.feeds), sum(f.kind == "option" for f in self.feeds))
-
         if cfg.collect_mode == "stream":
+            # start streaming index/futures first; option strikes are added once the spot is known
             self.stream = self.client.stream(self._on_tick)
             for f in self.feeds:
                 self._subscribe(f)
             # ticks only cover part of the minute the stream starts in, so that minute is skipped
             self.stream_start_minute = datetime.now(IST).replace(tzinfo=None, second=0, microsecond=0)
             self.stream.start()
+
+        spots = self._spot_prices()
+        self.last_spot.update({k: v for k, v in spots.items() if v})
+        for name in self.chains:
+            self._add_option_strikes(name, spots.get(name))
+        log.info("Tracking %d feeds (%d option contracts)",
+                 len(self.feeds), sum(f.kind == "option" for f in self.feeds))
 
     def _add_feed(self, feed):
         self.feeds.append(feed)
@@ -162,14 +165,32 @@ class Collector:
         self.stream.subscribe(f.exchange, [f.token], MODE_QUOTE if light else MODE_SNAPQUOTE)
 
     def _on_tick(self, tick):
+        self.last_ltp[(tick["exchange"], tick["token"])] = tick["ltp"]
         self.builder.on_tick(tick, datetime.now(IST).replace(tzinfo=None))
 
     def _spot_prices(self):
+        """Index spot prices for picking ATM strikes: REST quote, else the live stream."""
         by_exch = {}
         for f in self.spot_feeds.values():
             by_exch.setdefault(f.exchange, []).append(f.token)
-        quotes = {str(q.get("symbolToken")): q for q in self.client.quotes(by_exch)}
-        return {name: quotes.get(str(f.token), {}).get("ltp") for name, f in self.spot_feeds.items()}
+        try:
+            quotes = {str(q.get("symbolToken")): q for q in self.client.quotes(by_exch)}
+            spots = {name: quotes.get(str(f.token), {}).get("ltp") for name, f in self.spot_feeds.items()}
+            if all(spots.values()):
+                return spots
+        except Exception as e:
+            log.warning("Spot quote failed (%s)%s", e, " - using the live stream" if self.stream else "")
+            spots = {}
+        if not self.stream:
+            return spots
+        deadline = _time.monotonic() + SPOT_WAIT
+        while _time.monotonic() < deadline:
+            spots = {name: spots.get(name) or self.last_ltp.get((f.exchange, str(f.token)))
+                     for name, f in self.spot_feeds.items()}
+            if all(spots.values()):
+                break
+            _time.sleep(0.5)
+        return spots
 
     def _add_option_strikes(self, name, spot):
         if not spot:

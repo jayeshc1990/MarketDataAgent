@@ -28,6 +28,7 @@ LIMITS = {
 }
 
 TOKEN_ERRORS = {"AG8001", "AG8002", "AG8003", "AB8050", "AB8051", "AB1010"}
+TRANSIENT_ERRORS = {"AB4030"}   # "Unable to fetch market data" - passes after a retry
 QUOTE_BATCH = 50
 RATE_RETRY_DELAY = 1.5         # seconds, x refusal count, between retries of a refused request
 RATE_REFUSALS_BEFORE_PAUSE = 5  # consecutive "exceeding access rate" replies before pausing
@@ -155,6 +156,11 @@ class AngelClient:
                 if code in TOKEN_ERRORS and route != "login":
                     log.info("Session expired (%s), logging in again", code)
                     self.login()
+                    continue
+                if code in TRANSIENT_ERRORS:
+                    log.warning("%s: Angel One says '%s' (%s), retry %d", route,
+                                body.get("message"), code, attempt)
+                    _time.sleep(2 ** attempt)
                     continue
                 raise AngelAPIError(body.get("message", "request failed"), code)
             return body.get("data")

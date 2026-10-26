@@ -33,16 +33,17 @@ indices:
   #   fno_exchange: BFO
 
 # Other instruments saved as their own index-style files
+# Disabled for now - uncomment to collect them again
 extras:
-  INDIAVIX:
-    kind: spot
-    exchange: NSE
-    token: "99926017"
-  CRUDEOIL:
-    kind: future          # nearest-expiry MCX future is picked automatically
-    exchange: MCX
-    name: CRUDEOIL
-    instrument_type: FUTCOM
+  # INDIAVIX:
+  #   kind: spot
+  #   exchange: NSE
+  #   token: "99926017"
+  # CRUDEOIL:
+  #   kind: future          # nearest-expiry MCX future is picked automatically
+  #   exchange: MCX
+  #   name: CRUDEOIL
+  #   instrument_type: FUTCOM
 
 # Option contract range per index
 #   expiries: integer N  -> the N nearest expiries
