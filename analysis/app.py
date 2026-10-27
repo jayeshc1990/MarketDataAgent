@@ -169,44 +169,55 @@ with tabs[1]:
         k2.metric("Change-in-OI PCR", _num(last["chg_oi_pcr"], ".3f"),
                   f"PE {_num(last['pe_oi_chg'], '+,.0f')} / CE {_num(last['ce_oi_chg'], '+,.0f')}",
                   delta_color="off")
-        k3.metric("PCR % change since open", f"{_num(last['pcr_chg_open_pct'], '+.2f')}%")
+        k3.metric("PCR change vs previous bar", _num(last["pcr_chg"], "+.4f"),
+                  f"{_num(last['pcr_chg_pct'], '+.2f')}%")
         k4.metric("PCR (volume)", _num(last["pcr_volume"], ".3f"))
 
-        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                            row_heights=[0.3, 0.25, 0.25, 0.2], specs=[[{"secondary_y": True}], [{}], [{}], [{}]],
-                            subplot_titles=["PCR (OI) and spot", "Change-in-OI PCR (OI added since open: PE ÷ CE)",
+        fig = make_subplots(rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                            row_heights=[0.22, 0.14, 0.14, 0.18, 0.18, 0.14],
+                            specs=[[{"secondary_y": True}], [{}], [{}], [{}], [{}], [{}]],
+                            subplot_titles=["PCR (OI) and spot", "PCR change vs previous bar",
+                                            "PCR % change vs previous bar",
+                                            "Change-in-OI PCR (OI added since open: PE ÷ CE)",
                                             "OI added since open", "PCR % change since open"])
         fig.add_trace(go.Scatter(x=p.index, y=p["pcr"], name="PCR", line=dict(color="#386641", width=2)),
                       row=1, col=1)
         fig.add_trace(go.Scatter(x=p.index, y=p["spot"], name="Spot", line=dict(color="#8d99ae", width=1)),
                       row=1, col=1, secondary_y=True)
         fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=1, col=1)
+        up = np.where(p["pcr_chg"] >= 0, CE_COLOR, PE_COLOR)
+        fig.add_trace(go.Bar(x=p.index, y=p["pcr_chg"], name="PCR change", marker_color=up), row=2, col=1)
+        fig.add_trace(go.Bar(x=p.index, y=p["pcr_chg_pct"], name="PCR % change (bar)", marker_color=up),
+                      row=3, col=1)
         fig.add_trace(go.Scatter(x=p.index, y=p["chg_oi_pcr"], name="Change-in-OI PCR",
-                                 line=dict(color="#6a4c93", width=2)), row=2, col=1)
-        fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=2, col=1)
+                                 line=dict(color="#6a4c93", width=2)), row=4, col=1)
+        fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=4, col=1)
         fig.add_trace(go.Scatter(x=p.index, y=p["ce_oi_chg"], name="CE OI added", line=dict(color=CE_COLOR)),
-                      row=3, col=1)
+                      row=5, col=1)
         fig.add_trace(go.Scatter(x=p.index, y=p["pe_oi_chg"], name="PE OI added", line=dict(color=PE_COLOR)),
-                      row=3, col=1)
-        fig.add_trace(go.Scatter(x=p.index, y=p["pcr_chg_open_pct"], name="PCR % change", fill="tozeroy",
-                                 line=dict(color="#6a994e")), row=4, col=1)
+                      row=5, col=1)
+        fig.add_trace(go.Scatter(x=p.index, y=p["pcr_chg_open_pct"], name="PCR % change since open",
+                                 fill="tozeroy", line=dict(color="#6a994e")), row=6, col=1)
         # early in the day CE OI added is tiny, so the ratio can spike; keep the axis on the typical range
         q = p["chg_oi_pcr"].dropna()
         if len(q) > 10:
             lo_q, hi_q = q.quantile(0.02), q.quantile(0.98)
             pad = (hi_q - lo_q) * 0.1 or 0.5
-            fig.update_yaxes(range=[lo_q - pad, hi_q + pad], row=2, col=1)
+            fig.update_yaxes(range=[lo_q - pad, hi_q + pad], row=4, col=1)
         fig.update_yaxes(title_text="PCR", row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Spot", row=1, col=1, secondary_y=True, showgrid=False)
-        fig.update_yaxes(title_text="Ratio", row=2, col=1)
-        fig.update_yaxes(title_text="OI", row=3, col=1)
-        fig.update_yaxes(title_text="%", row=4, col=1)
-        fig.update_layout(height=950, margin=dict(t=40, b=20), legend=dict(orientation="h", yanchor="top", y=-0.05))
+        fig.update_yaxes(tickformat=".4f", row=2, col=1)
+        fig.update_yaxes(title_text="%", row=3, col=1)
+        fig.update_yaxes(title_text="Ratio", row=4, col=1)
+        fig.update_yaxes(title_text="OI", row=5, col=1)
+        fig.update_yaxes(title_text="%", row=6, col=1)
+        fig.update_layout(height=1350, margin=dict(t=40, b=20), bargap=0,
+                          legend=dict(orientation="h", yanchor="top", y=-0.04))
         st.plotly_chart(time_axes(fig), width="stretch")
 
         st.caption(f"Strikes {lo:,.0f}–{hi:,.0f} ({int(last['contracts'])} contracts at the latest bar). "
                    f"Files with every tracked strike: {root / underlying / 'PCR' / expiry}")
-        show = p.rename(columns={"pcr_chg_open_pct": "pcr_chg_open_%"})
+        show = p.rename(columns={"pcr_chg_pct": "pcr_chg_%", "pcr_chg_open_pct": "pcr_chg_open_%"})
         st.dataframe(show.sort_index(ascending=False), width="stretch", height=300)
         st.download_button("Download PCR table (CSV)", show.to_csv().encode(),
                            file_name=f"{underlying}_PCR_{expiry}_{tf}.csv", mime="text/csv")
@@ -214,6 +225,8 @@ with tabs[1]:
         st.markdown(
             "- **PCR = put OI ÷ call OI** over the selected strikes (the whole open interest). Above 1, more puts "
             "are open than calls.\n"
+            "- **Change / % change vs previous bar** shows *when* the sentiment shifted. Spikes that come before "
+            "a spot move are the pattern to look for.\n"
             "- **Change-in-OI PCR = PE OI added since 09:15 ÷ CE OI added since 09:15.** It shows today's fresh "
             "positioning only, so it moves much faster than PCR. Above 1: more puts written today (support being "
             "built, bullish); below 1: more calls written (bearish).\n"

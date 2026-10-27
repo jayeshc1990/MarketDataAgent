@@ -94,7 +94,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Tab | What it shows |
 |---|---|
 | Overview | spot candles + futures + max pain, futures OI, put-call ratio, ATM straddle premium |
-| PCR | put-call ratio (OI) with spot, change-in-OI PCR (PE vs CE OI added since open), PCR % change since open, volume PCR, table + CSV download |
+| PCR | put-call ratio (OI) with spot, PCR change and % change vs previous bar, change-in-OI PCR (PE vs CE OI added since open), PCR % change since open, volume PCR, table + CSV download |
 | Open interest | CE / PE OI-change heatmaps (strike x time, spot overlaid), OI by strike at any moment |
 | Build-up | long/short build-up, short covering, long unwinding per strike for any window, plus a timeline |
 | Volatility & gamma | ATM IV, IV smile now vs earlier, gamma exposure by strike |
@@ -124,6 +124,7 @@ Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_5min.csv
 | Column | Meaning |
 |---|---|
 | `pcr` | put OI ÷ call OI (whole open interest, all tracked strikes) |
+| `pcr_chg`, `pcr_chg_pct` | PCR change vs the previous bar, absolute and % |
 | `ce_oi_chg`, `pe_oi_chg` | OI added since the day's first bar (each strike from when it started being tracked) |
 | `chg_oi_pcr` | change-in-OI PCR = `pe_oi_chg` ÷ `ce_oi_chg` |
 | `pcr_chg_open`, `pcr_chg_open_pct` | PCR change since the day's first bar, absolute and % |
