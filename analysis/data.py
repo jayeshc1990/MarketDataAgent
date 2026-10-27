@@ -97,25 +97,29 @@ def spot_series(opts: pd.DataFrame, idx: pd.DataFrame) -> pd.Series:
     return opts.groupby("timestamp")["underlying_spot"].last().dropna()
 
 
-PCR_COLS = ["spot", "ce_oi", "pe_oi", "pcr", "pcr_chg", "pcr_chg_pct", "pcr_chg_open", "pcr_chg_open_pct",
-            "ce_volume", "pe_volume", "pcr_volume", "contracts"]
+PCR_COLS = ["spot", "ce_oi", "pe_oi", "pcr", "ce_oi_chg", "pe_oi_chg", "chg_oi_pcr", "pcr_chg_open",
+            "pcr_chg_open_pct", "ce_volume", "pe_volume", "pcr_volume", "contracts"]
 
 
 def pcr(opts: pd.DataFrame, spot: pd.Series = None) -> pd.DataFrame:
-    """Put-call ratio per timestamp (PE OI / CE OI over the given contracts), with its change
-    vs the previous bar and vs the day's first bar, absolute and in %. Changes reset each day."""
+    """Put-call ratio per timestamp (PE OI / CE OI over the given contracts), plus the change-in-OI PCR
+    (PE OI added since the day's open / CE OI added since the open) and PCR's change since the open."""
     oi = opts.pivot_table(index="timestamp", columns="symbol", values="oi", aggfunc="last")
     # a contract missing one minute would make PCR jump, so carry its last OI forward (same day only)
     oi = oi.groupby(oi.index.date).ffill()
+    # OI added today, per contract from its first bar of the day, so a strike that starts being
+    # tracked mid-day counts only what is added after it joined, not its whole OI
+    oi_chg = oi - oi.groupby(oi.index.date).transform("first")
     vol = opts.pivot_table(index="timestamp", columns="symbol", values="volume", aggfunc="sum").reindex(oi.index)
     is_pe = (opts.groupby("symbol")["type"].first() == "PE").reindex(oi.columns).to_numpy()
     out = pd.DataFrame(index=oi.index)
     out["spot"] = spot.reindex(out.index) if spot is not None else np.nan
     out["ce_oi"], out["pe_oi"] = oi.loc[:, ~is_pe].sum(axis=1, min_count=1), oi.loc[:, is_pe].sum(axis=1, min_count=1)
     out["pcr"] = out["pe_oi"] / out["ce_oi"]
+    out["ce_oi_chg"] = oi_chg.loc[:, ~is_pe].sum(axis=1, min_count=1)
+    out["pe_oi_chg"] = oi_chg.loc[:, is_pe].sum(axis=1, min_count=1)
+    out["chg_oi_pcr"] = out["pe_oi_chg"] / out["ce_oi_chg"].where(out["ce_oi_chg"] != 0)
     day = out.index.date
-    out["pcr_chg"] = out.groupby(day)["pcr"].diff()
-    out["pcr_chg_pct"] = out.groupby(day)["pcr"].pct_change(fill_method=None) * 100
     first = out.groupby(day)["pcr"].transform("first")
     out["pcr_chg_open"] = out["pcr"] - first
     out["pcr_chg_open_pct"] = (out["pcr"] / first - 1) * 100

@@ -94,7 +94,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Tab | What it shows |
 |---|---|
 | Overview | spot candles + futures + max pain, futures OI, put-call ratio, ATM straddle premium |
-| PCR | put-call ratio (OI) with spot, its change and % change vs the previous bar or the day open, volume PCR, table + CSV download |
+| PCR | put-call ratio (OI) with spot, change-in-OI PCR (PE vs CE OI added since open), PCR % change since open, volume PCR, table + CSV download |
 | Open interest | CE / PE OI-change heatmaps (strike x time, spot overlaid), OI by strike at any moment |
 | Build-up | long/short build-up, short covering, long unwinding per strike for any window, plus a timeline |
 | Volatility & gamma | ATM IV, IV smile now vs earlier, gamma exposure by strike |
@@ -121,9 +121,13 @@ ssh -L 8501:localhost:8501 root@<server-ip>
 Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_1min.csv    <- expiry folder, one file per day
 Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_5min.csv
 ```
-Columns: `spot, ce_oi, pe_oi, pcr, pcr_chg, pcr_chg_pct` (vs previous bar), `pcr_chg_open, pcr_chg_open_pct`
-(vs the day's first bar), `ce_volume, pe_volume, pcr_volume, contracts`. PCR = put OI / call OI over all
-tracked strikes; `contracts` shows when a new strike joined (that also moves PCR).
+| Column | Meaning |
+|---|---|
+| `pcr` | put OI ÷ call OI (whole open interest, all tracked strikes) |
+| `ce_oi_chg`, `pe_oi_chg` | OI added since the day's first bar (each strike from when it started being tracked) |
+| `chg_oi_pcr` | change-in-OI PCR = `pe_oi_chg` ÷ `ce_oi_chg` |
+| `pcr_chg_open`, `pcr_chg_open_pct` | PCR change since the day's first bar, absolute and % |
+| `spot`, `ce_oi`, `pe_oi`, `ce_volume`, `pe_volume`, `pcr_volume`, `contracts` | context; a jump in `contracts` means a new strike joined |
 
 It only reads the collected CSVs, so it never affects the collector. Install the timer that runs it every
 minute in market hours (and once at 16:05 after the backfill), and build files for data collected so far:

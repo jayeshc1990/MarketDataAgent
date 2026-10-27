@@ -17,8 +17,7 @@ from analysis import data as D  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TIMEFRAMES = ("1min", "5min")
-ROUND = {"pcr": 4, "pcr_chg": 4, "pcr_chg_open": 4, "pcr_volume": 4,
-         "pcr_chg_pct": 2, "pcr_chg_open_pct": 2, "spot": 2}
+ROUND = {"pcr": 4, "chg_oi_pcr": 4, "pcr_chg_open": 4, "pcr_volume": 4, "pcr_chg_open_pct": 2, "spot": 2}
 
 
 def pcr_path(root: Path, underlying: str, expiry: str, day, tf: str) -> Path:
@@ -32,7 +31,7 @@ def _newest_mtime(paths) -> float:
 def _write(df, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     out = df.round(ROUND)
-    for c in ("ce_oi", "pe_oi", "ce_volume", "pe_volume"):
+    for c in ("ce_oi", "pe_oi", "ce_oi_chg", "pe_oi_chg", "ce_volume", "pe_volume"):
         out[c] = out[c].astype("Int64")
     tmp = path.with_suffix(".tmp")
     out.to_csv(tmp)
