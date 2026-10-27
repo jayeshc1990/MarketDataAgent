@@ -42,9 +42,16 @@ def list_expiries(root: Path, underlying: str) -> list:
     return sorted((p.name for p in base.iterdir() if p.is_dir() and DATE_DIR_RE.match(p.name)), reverse=True)
 
 
-def files_signature(folder: Path) -> tuple:
-    """Changes whenever a CSV in the folder is rewritten - used as a cache key."""
-    return tuple(sorted((p.name, p.stat().st_mtime_ns) for p in folder.glob("*.csv")))
+def files_signature(*folders: Path) -> tuple:
+    """Changes whenever a CSV in any of the folders is added or rewritten - used as a cache key."""
+    sig = []
+    for folder in folders:
+        for p in folder.glob("*.csv"):
+            try:
+                sig.append((folder.name, p.name, p.stat().st_mtime_ns))
+            except FileNotFoundError:      # collector replaced it mid-scan
+                pass
+    return tuple(sorted(sig))
 
 
 def load_options(root: Path, underlying: str, expiry: str, tf: str) -> pd.DataFrame:

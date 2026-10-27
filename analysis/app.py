@@ -21,6 +21,7 @@ st.set_page_config(page_title="NIFTY Options Analysis", layout="wide")
 CE_COLOR, PE_COLOR, SPOT_COLOR = "#2a9d8f", "#e76f51", "#264653"
 BUILDUP_COLORS = {"Long build-up": "#2a9d8f", "Short covering": "#8ecae6",
                   "Short build-up": "#e76f51", "Long unwinding": "#f4a261"}
+REFRESH_SECONDS = 30   # how often the page checks the CSVs for new bars
 # hide nights and weekends on time axes
 RANGEBREAKS = [dict(bounds=["sat", "mon"]), dict(bounds=[15.5, 9.25], pattern="hour")]
 
@@ -30,14 +31,16 @@ def time_axes(fig):
     return fig
 
 
-@st.cache_data(show_spinner="Loading data ...")
-def load(root: str, underlying: str, expiry: str, tf: str, _sig):
+@st.cache_data(show_spinner="Loading data ...", max_entries=8)
+def load(root: str, underlying: str, expiry: str, tf: str, sig):
+    # `sig` (file names + modification times) is part of the cache key, so a CSV the
+    # collector rewrites makes this reload. (Arguments named _x are not hashed by Streamlit.)
     opts = D.load_options(Path(root), underlying, expiry, tf)
     idx = D.load_index(Path(root), underlying, opts["date"].unique() if not opts.empty else [], tf)
     return opts, idx
 
 
-@st.cache_data(show_spinner="Computing metrics ...")
+@st.cache_data(show_spinner="Computing metrics ...", max_entries=8)
 def metrics(opts, idx):
     spot = D.spot_series(opts, idx)
     return spot, D.pcr(opts), D.max_pain(opts), D.atm_straddle(opts, spot), D.order_flow(opts, spot)
@@ -53,7 +56,25 @@ if not unders:
 underlying = st.sidebar.selectbox("Index", unders)
 expiry = st.sidebar.selectbox("Expiry", D.list_expiries(root, underlying))
 tf = st.sidebar.radio("Candle", ["1min", "5min"], horizontal=True)
-opts_all, idx_all = load(str(root), underlying, expiry, tf, D.files_signature(root / underlying / expiry))
+watched = (root / underlying / expiry, root / underlying / "INDEX")
+sig = D.files_signature(*watched)
+st.session_state["data_sig"] = sig
+opts_all, idx_all = load(str(root), underlying, expiry, tf, sig)
+
+auto = st.sidebar.toggle("Auto-refresh when new data arrives", value=True)
+
+
+@st.fragment(run_every=REFRESH_SECONDS if auto else None)
+def _watch_files():
+    """Checks the CSVs every REFRESH_SECONDS and reruns the page when the collector has written new bars."""
+    if D.files_signature(*watched) != st.session_state.get("data_sig"):
+        st.rerun(scope="app")
+    st.caption(f"Data as of {pd.Timestamp.now(tz='Asia/Kolkata'):%H:%M:%S} IST"
+               + (f" · checking every {REFRESH_SECONDS}s" if auto else " · auto-refresh off"))
+
+
+with st.sidebar:
+    _watch_files()
 if opts_all.empty:
     st.warning("No option files for this expiry yet.")
     st.stop()
