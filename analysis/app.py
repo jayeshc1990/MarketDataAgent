@@ -14,9 +14,11 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from analysis import auth  # noqa: E402
 from analysis import data as D  # noqa: E402
 
 st.set_page_config(page_title="NIFTY Options Analysis", layout="wide")
+auth.require_login()     # nothing below runs (no data is read) until the user has logged in
 
 CE_COLOR, PE_COLOR, SPOT_COLOR = "#2a9d8f", "#e76f51", "#264653"
 BUILDUP_COLORS = {"Long build-up": "#2a9d8f", "Short covering": "#8ecae6",

@@ -1,5 +1,5 @@
 [Unit]
-Description=MarketDataAgent analysis dashboard (Streamlit, localhost only)
+Description=MarketDataAgent analysis dashboard (Streamlit)
 Wants=network-online.target
 After=network-online.target
 
@@ -7,8 +7,10 @@ After=network-online.target
 Type=simple
 User=__USER__
 WorkingDirectory=__APP_DIR__
-# Bound to 127.0.0.1: reach it through an SSH tunnel, it is never exposed to the internet
-ExecStart=__APP_DIR__/.venv/bin/streamlit run analysis/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --browser.gatherUsageStats false
+# MDA_PUBLIC=1: reachable from the internet, so the app refuses to run without a login set up
+Environment=MDA_PUBLIC=__PUBLIC__
+# Private: 127.0.0.1 (SSH tunnel only). Public: 0.0.0.0 with HTTPS (see deploy/setup_ui.sh --public)
+ExecStart=__APP_DIR__/.venv/bin/streamlit run analysis/app.py --server.address __ADDRESS__ --server.port 8501 --server.headless true --browser.gatherUsageStats false --client.toolbarMode minimal __TLS_ARGS__
 Restart=on-failure
 RestartSec=10
 

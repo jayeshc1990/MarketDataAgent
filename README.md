@@ -114,6 +114,21 @@ To open it, start an SSH tunnel from your PC and browse to http://localhost:8501
 ssh -L 8501:localhost:8501 root@<server-ip>
 ```
 
+**Open it from the internet, with a login** (one username + two passwords, both required):
+```bash
+bash deploy/setup_ui.sh --public
+```
+It asks for the username and the two passwords (only salted hashes are saved, in `.env`), creates a
+self-signed HTTPS certificate, listens on all addresses and opens port 8501 in ufw if ufw is on.
+Browse to `https://<server-ip>:8501` (the browser warns once about the certificate: Advanced → Proceed).
+If your VPS provider has its own firewall, allow TCP 8501 there too.
+
+* Change the login: `.venv/bin/python analysis/set_dashboard_password.py && sudo systemctl restart marketdataui`
+* 5 wrong attempts from one IP lock that IP out for 15 minutes.
+* Reloading the page logs you out (each browser tab is its own session).
+* In public mode the dashboard refuses to start without a login configured.
+* Back to tunnel-only: `bash deploy/setup_ui.sh`
+
 ### PCR files
 
 `analysis/export_pcr.py` writes the put-call ratio for every expiry to CSV, one row per bar:
