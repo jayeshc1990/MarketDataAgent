@@ -97,12 +97,34 @@ def spot_series(opts: pd.DataFrame, idx: pd.DataFrame) -> pd.Series:
     return opts.groupby("timestamp")["underlying_spot"].last().dropna()
 
 
-def pcr(opts: pd.DataFrame) -> pd.DataFrame:
-    g = opts.groupby(["timestamp", "type"])[["oi", "volume"]].sum().unstack("type")
-    out = pd.DataFrame(index=g.index)
-    out["pcr_oi"] = g[("oi", "PE")] / g[("oi", "CE")]
-    out["pcr_volume"] = g[("volume", "PE")] / g[("volume", "CE")]
-    return out.replace([np.inf, -np.inf], np.nan)
+PCR_COLS = ["spot", "ce_oi", "pe_oi", "pcr", "pcr_chg", "pcr_chg_pct", "pcr_chg_open", "pcr_chg_open_pct",
+            "ce_volume", "pe_volume", "pcr_volume", "contracts"]
+
+
+def pcr(opts: pd.DataFrame, spot: pd.Series = None) -> pd.DataFrame:
+    """Put-call ratio per timestamp (PE OI / CE OI over the given contracts), with its change
+    vs the previous bar and vs the day's first bar, absolute and in %. Changes reset each day."""
+    oi = opts.pivot_table(index="timestamp", columns="symbol", values="oi", aggfunc="last")
+    # a contract missing one minute would make PCR jump, so carry its last OI forward (same day only)
+    oi = oi.groupby(oi.index.date).ffill()
+    vol = opts.pivot_table(index="timestamp", columns="symbol", values="volume", aggfunc="sum").reindex(oi.index)
+    is_pe = (opts.groupby("symbol")["type"].first() == "PE").reindex(oi.columns).to_numpy()
+    out = pd.DataFrame(index=oi.index)
+    out["spot"] = spot.reindex(out.index) if spot is not None else np.nan
+    out["ce_oi"], out["pe_oi"] = oi.loc[:, ~is_pe].sum(axis=1, min_count=1), oi.loc[:, is_pe].sum(axis=1, min_count=1)
+    out["pcr"] = out["pe_oi"] / out["ce_oi"]
+    day = out.index.date
+    out["pcr_chg"] = out.groupby(day)["pcr"].diff()
+    out["pcr_chg_pct"] = out.groupby(day)["pcr"].pct_change(fill_method=None) * 100
+    first = out.groupby(day)["pcr"].transform("first")
+    out["pcr_chg_open"] = out["pcr"] - first
+    out["pcr_chg_open_pct"] = (out["pcr"] / first - 1) * 100
+    out["ce_volume"] = vol.loc[:, ~is_pe].sum(axis=1, min_count=1)
+    out["pe_volume"] = vol.loc[:, is_pe].sum(axis=1, min_count=1)
+    out["pcr_volume"] = out["pe_volume"] / out["ce_volume"]
+    out["contracts"] = oi.notna().sum(axis=1)
+    out.index.name = "timestamp"
+    return out[PCR_COLS].replace([np.inf, -np.inf], np.nan)
 
 
 def max_pain(opts: pd.DataFrame) -> pd.Series:

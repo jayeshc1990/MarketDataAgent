@@ -43,7 +43,7 @@ def load(root: str, underlying: str, expiry: str, tf: str, sig):
 @st.cache_data(show_spinner="Computing metrics ...", max_entries=8)
 def metrics(opts, idx):
     spot = D.spot_series(opts, idx)
-    return spot, D.pcr(opts), D.max_pain(opts), D.atm_straddle(opts, spot), D.order_flow(opts, spot)
+    return spot, D.pcr(opts, spot), D.max_pain(opts), D.atm_straddle(opts, spot), D.order_flow(opts, spot)
 
 
 # ---------------------------------------------------------------- sidebar
@@ -100,7 +100,9 @@ last_t = times[-1]
 st.title(f"{underlying} · expiry {pd.Timestamp(expiry):%d %b %Y}")
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Spot", f"{spot.iloc[-1]:,.2f}", f"{spot.iloc[-1] - spot.iloc[0]:+,.2f} over selection")
-c2.metric("PCR (OI)", f"{pcr['pcr_oi'].iloc[-1]:.2f}", f"{pcr['pcr_oi'].iloc[-1] - pcr['pcr_oi'].iloc[0]:+.2f}")
+pv = pcr["pcr"].dropna()
+if not pv.empty:
+    c2.metric("PCR (OI)", f"{pv.iloc[-1]:.2f}", f"{pcr['pcr_chg_open'].dropna().iloc[-1]:+.2f} since open")
 c3.metric("Max pain", f"{mpain.iloc[-1]:,.0f}")
 # minutes with OI but no candle leave gaps, so the KPIs use the latest bar that has a value
 sv, iv_s = (straddle.get("straddle", pd.Series(dtype=float)).dropna(),
@@ -111,7 +113,7 @@ if not iv_s.empty:
     c5.metric("ATM IV", f"{iv_s.iloc[-1]:.2f}%", f"{iv_s.iloc[-1] - iv_s.iloc[0]:+.2f}")
 st.caption(f"Latest bar: {pd.Timestamp(last_t):%a %d %b %H:%M} · PCR / max pain use only the tracked strikes")
 
-tabs = st.tabs(["Overview", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract",
+tabs = st.tabs(["Overview", "PCR", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract",
                 "Data explorer"])
 
 # ---------------------------------------------------------------- overview
@@ -132,7 +134,7 @@ with tabs[0]:
         fig.add_trace(go.Scatter(x=spot.index, y=spot, name="Spot", line=dict(color=SPOT_COLOR)), row=1, col=1)
     fig.add_trace(go.Scatter(x=mpain.index, y=mpain, name="Max pain", line=dict(dash="dot", color="#bc4749"),
                              line_shape="hv"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=pcr.index, y=pcr["pcr_oi"], name="PCR", line=dict(color="#386641")), row=3, col=1)
+    fig.add_trace(go.Scatter(x=pcr.index, y=pcr["pcr"], name="PCR", line=dict(color="#386641")), row=3, col=1)
     fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=3, col=1)
     if not straddle.empty:
         fig.add_trace(go.Scatter(x=straddle.index, y=straddle["straddle"], name="ATM straddle",
@@ -150,8 +152,65 @@ with tabs[0]:
             "- **ATM straddle** shows how much movement the market is pricing in. It decays with time; when it "
             "*rises* while spot moves, traders are paying up for the move.")
 
-# ---------------------------------------------------------------- open interest
+# ---------------------------------------------------------------- PCR
 with tabs[1]:
+    base = st.radio("Change measured from", ["previous bar", "day open"], horizontal=True)
+    chg, chg_pct = ("pcr_chg", "pcr_chg_pct") if base == "previous bar" else ("pcr_chg_open", "pcr_chg_open_pct")
+    p = pcr.dropna(subset=["pcr"])
+    if p.empty:
+        st.info("No OI yet for the selected strikes.")
+    else:
+        last = p.iloc[-1]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("PCR (OI)", f"{last['pcr']:.3f}")
+        k2.metric(f"Change vs {base}", f"{last[chg]:+.4f}" if pd.notna(last[chg]) else "–")
+        k3.metric(f"% change vs {base}", f"{last[chg_pct]:+.2f}%" if pd.notna(last[chg_pct]) else "–")
+        k4.metric("PCR (volume)", f"{last['pcr_volume']:.3f}" if pd.notna(last["pcr_volume"]) else "–")
+
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+                            row_heights=[0.4, 0.3, 0.3], specs=[[{"secondary_y": True}], [{}], [{}]],
+                            subplot_titles=["PCR (OI) and spot", f"PCR change vs {base}",
+                                            f"PCR % change vs {base}"])
+        fig.add_trace(go.Scatter(x=p.index, y=p["pcr"], name="PCR", line=dict(color="#386641", width=2)),
+                      row=1, col=1)
+        fig.add_trace(go.Scatter(x=p.index, y=p["spot"], name="Spot", line=dict(color="#8d99ae", width=1)), row=1, col=1, secondary_y=True)
+        fig.add_hline(y=1, line=dict(width=1, dash="dash", color="grey"), row=1, col=1)
+        up = np.where(p[chg] >= 0, CE_COLOR, PE_COLOR)
+        # day-open changes are a running level, so a line reads better; bar-to-bar changes are bars
+        if base == "previous bar":
+            fig.add_trace(go.Bar(x=p.index, y=p[chg], name="Change", marker_color=up), row=2, col=1)
+            fig.add_trace(go.Bar(x=p.index, y=p[chg_pct], name="% change", marker_color=up), row=3, col=1)
+        else:
+            fig.add_trace(go.Scatter(x=p.index, y=p[chg], name="Change", fill="tozeroy",
+                                     line=dict(color="#386641")), row=2, col=1)
+            fig.add_trace(go.Scatter(x=p.index, y=p[chg_pct], name="% change", fill="tozeroy",
+                                     line=dict(color="#6a994e")), row=3, col=1)
+        fig.update_yaxes(title_text="PCR", row=1, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="Spot", row=1, col=1, secondary_y=True, showgrid=False)
+        fig.update_yaxes(tickformat=".4f", row=2, col=1)
+        fig.update_yaxes(title_text="%", row=3, col=1)
+        fig.update_layout(height=800, margin=dict(t=40, b=20), showlegend=False, bargap=0)
+        st.plotly_chart(time_axes(fig), width="stretch")
+
+        st.caption(f"Strikes {lo:,.0f}–{hi:,.0f} ({int(last['contracts'])} contracts at the latest bar). "
+                   f"Files with every tracked strike: {root / underlying / 'PCR' / expiry}")
+        show = p.rename(columns={"pcr_chg_pct": "pcr_chg_%", "pcr_chg_open_pct": "pcr_chg_open_%"})
+        st.dataframe(show.sort_index(ascending=False), width="stretch", height=300)
+        st.download_button("Download PCR table (CSV)", show.to_csv().encode(),
+                           file_name=f"{underlying}_PCR_{expiry}_{tf}.csv", mime="text/csv")
+    with st.expander("How to read this"):
+        st.markdown(
+            "- **PCR = put OI ÷ call OI** over the selected strikes. Above 1, more puts are open than calls.\n"
+            "- **Rising PCR** usually means put writers are adding (support being built), read as bullish. "
+            "**Falling PCR** means call writing or put unwinding, read as bearish.\n"
+            "- **Change / % change vs previous bar** shows *when* the sentiment shifted. Spikes that come before "
+            "a spot move are the pattern to look for.\n"
+            "- **vs day open** shows the net shift since 09:15; it resets each day.\n"
+            "- A jump in the *contracts* count means a new strike started being tracked (spot moved), which "
+            "also moves PCR.")
+
+# ---------------------------------------------------------------- open interest
+with tabs[2]:
     since = st.radio("OI change measured from", ["start of each day", "start of selection"], horizontal=True)
     since_key = "day" if since.startswith("start of each") else "selection"
     cols = st.columns(2)
@@ -189,7 +248,7 @@ with tabs[1]:
             "exiting, so that level is weakening.")
 
 # ---------------------------------------------------------------- build-up
-with tabs[2]:
+with tabs[3]:
     c1, c2 = st.columns([2, 1])
     t0, t1 = c1.select_slider("Window", times, value=(times[0], times[-1]),
                               format_func=lambda t: pd.Timestamp(t).strftime("%d %b %H:%M"))
@@ -229,7 +288,7 @@ with tabs[2]:
             "A switch to **short covering** at those strikes often comes before a breakout through them.")
 
 # ---------------------------------------------------------------- volatility & gamma
-with tabs[3]:
+with tabs[4]:
     c1, c2 = st.columns(2)
     if not straddle.empty:
         f = go.Figure(go.Scatter(x=straddle.index, y=straddle["atm_iv"], name="ATM IV", line=dict(color="#6a4c93")))
@@ -268,7 +327,7 @@ with tabs[3]:
             "so moves tend to accelerate. Strikes with large bars act like magnets or walls.")
 
 # ---------------------------------------------------------------- order flow
-with tabs[4]:
+with tabs[5]:
     f = make_subplots(specs=[[{"secondary_y": True}]])
     f.add_trace(go.Scatter(x=flow.index, y=flow["signal"].rolling(5, min_periods=1).mean(),
                            name="Flow signal (5-bar avg)", line=dict(color="#6a4c93")), secondary_y=False)
@@ -298,7 +357,7 @@ with tabs[4]:
             "edge in this selection. Check that a pattern repeats across several days before trusting it.")
 
 # ---------------------------------------------------------------- single contract
-with tabs[5]:
+with tabs[6]:
     c1, c2 = st.columns(2)
     k = c1.selectbox("Strike", sorted(opts["strike"].unique()),
                      index=int(np.argmin(np.abs(np.array(sorted(opts["strike"].unique())) - spot.iloc[-1]))),
@@ -374,7 +433,7 @@ def _filter_ui(df: pd.DataFrame, key: str) -> pd.DataFrame:
     return df
 
 
-with tabs[6]:
+with tabs[7]:
     dsets = {"Options (one row per contract per bar)": _explorer_frame(opts)}
     if not idx.empty:
         dsets["Index & futures"] = _explorer_frame(idx)

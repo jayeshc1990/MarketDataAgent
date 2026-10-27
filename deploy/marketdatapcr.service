@@ -1,0 +1,11 @@
+[Unit]
+Description=MarketDataAgent - write put-call ratio files from the collected CSVs
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/python analysis/export_pcr.py
+# Low priority: it only reads the CSVs, so it never competes with the collector
+Nice=10
+IOSchedulingClass=idle

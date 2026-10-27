@@ -94,6 +94,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Tab | What it shows |
 |---|---|
 | Overview | spot candles + futures + max pain, futures OI, put-call ratio, ATM straddle premium |
+| PCR | put-call ratio (OI) with spot, its change and % change vs the previous bar or the day open, volume PCR, table + CSV download |
 | Open interest | CE / PE OI-change heatmaps (strike x time, spot overlaid), OI by strike at any moment |
 | Build-up | long/short build-up, short covering, long unwinding per strike for any window, plus a timeline |
 | Volatility & gamma | ATM IV, IV smile now vs earlier, gamma exposure by strike |
@@ -112,6 +113,24 @@ To open it, start an SSH tunnel from your PC and browse to http://localhost:8501
 ```bash
 ssh -L 8501:localhost:8501 root@<server-ip>
 ```
+
+### PCR files
+
+`analysis/export_pcr.py` writes the put-call ratio for every expiry to CSV, one row per bar:
+```
+Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_1min.csv    <- expiry folder, one file per day
+Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_5min.csv
+```
+Columns: `spot, ce_oi, pe_oi, pcr, pcr_chg, pcr_chg_pct` (vs previous bar), `pcr_chg_open, pcr_chg_open_pct`
+(vs the day's first bar), `ce_volume, pe_volume, pcr_volume, contracts`. PCR = put OI / call OI over all
+tracked strikes; `contracts` shows when a new strike joined (that also moves PCR).
+
+It only reads the collected CSVs, so it never affects the collector. Install the timer that runs it every
+minute in market hours (and once at 16:05 after the backfill), and build files for data collected so far:
+```bash
+bash deploy/setup_pcr.sh
+```
+Run it by hand any time: `.venv/bin/python analysis/export_pcr.py` (add `--all` to rebuild every expiry).
 
 Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streamlit run analysis/app.py`.
 

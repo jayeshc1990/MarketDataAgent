@@ -1,0 +1,12 @@
+[Unit]
+Description=Update PCR files every minute during market hours
+
+[Timer]
+# 20 s past each minute, after the collector has written that minute's rows
+OnCalendar=Mon..Fri *-*-* 09..15:*:20 Asia/Kolkata
+# once more after the 15:40 end-of-day candle backfill
+OnCalendar=Mon..Fri *-*-* 16:05:00 Asia/Kolkata
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
