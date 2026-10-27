@@ -124,6 +124,8 @@ Browse to `https://<server-ip>:8501` (the browser warns once about the certifica
 If your VPS provider has its own firewall, allow TCP 8501 there too.
 
 * Change the login: `.venv/bin/python analysis/set_dashboard_password.py && sudo systemctl restart marketdataui`
+* The login page and browser tab only show "Library Management" (`PUBLIC_NAME` in `analysis/auth.py`); the real
+  dashboard appears after login.
 * 5 wrong attempts from one IP lock that IP out for 15 minutes.
 * Reloading the page logs you out (each browser tab is its own session).
 * In public mode the dashboard refuses to start without a login configured.

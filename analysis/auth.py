@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 USER_KEY, PASS1_KEY, PASS2_KEY = "DASHBOARD_USER", "DASHBOARD_PASS1_HASH", "DASHBOARD_PASS2_HASH"
 ITERATIONS = 310_000
 MAX_FAILS, LOCKOUT = 5, 15 * 60                          # 5 wrong tries in 15 min -> locked 15 min
+PUBLIC_NAME = "Library Management"                     # what the login page and browser tab show
 FAIL_DELAY = 1.5                                         # seconds added to every failed attempt
 
 
@@ -69,7 +70,7 @@ def _record(ip: str, ok: bool):
 
 
 def require_login():
-    """Shows the login form and stops the page until the user is logged in.
+    """Shows a neutral login form and stops the page until the user is logged in.
     Without credentials in .env the dashboard stays open, unless MDA_PUBLIC=1 (then it refuses to run)."""
     if st.session_state.get("auth_user"):
         if st.sidebar.button("Log out"):
@@ -79,13 +80,16 @@ def require_login():
     creds = credentials()
     if creds is None:
         if os.environ.get("MDA_PUBLIC") == "1":
-            st.error("Login is not set up. On the server run: .venv/bin/python analysis/set_dashboard_password.py")
+            print("Login is not set up. Run: .venv/bin/python analysis/set_dashboard_password.py", flush=True)
+            st.error("Sign-in is not available.")
             st.stop()
         return
 
     ip = st.context.ip_address
     ip = ip if isinstance(ip, str) and ip else "local"      # None when browsing from the server itself
-    st.title("NIFTY Options Analysis")
+    # the page is public, so it shows a neutral name, not what is behind it
+    st.title(PUBLIC_NAME)
+    st.caption("Sign in to continue")
     wait = _locked_for(ip)
     if wait:
         st.error(f"Too many failed attempts. Try again in {int(wait // 60) + 1} min.")
