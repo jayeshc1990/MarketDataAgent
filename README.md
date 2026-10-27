@@ -141,7 +141,8 @@ Data/NIFTY/PCR/2026-11-03/NIFTY_PCR_2026-10-28_5min.csv
 | Column | Meaning |
 |---|---|
 | `pcr` | put OI ÷ call OI (whole open interest, all tracked strikes) |
-| `pcr_chg`, `pcr_chg_pct` | PCR change vs the previous bar, absolute and % |
+| `pcr_prev` | actual PCR at the previous candle |
+| `pcr_chg`, `pcr_chg_pct` | PCR change vs `pcr_prev`, absolute and % |
 | `ce_oi_chg`, `pe_oi_chg` | OI added since the day's first bar (each strike from when it started being tracked) |
 | `chg_oi_pcr` | change-in-OI PCR = `pe_oi_chg` ÷ `ce_oi_chg` |
 | `pcr_chg_open`, `pcr_chg_open_pct` | PCR change since the day's first bar, absolute and % |

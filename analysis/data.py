@@ -97,7 +97,7 @@ def spot_series(opts: pd.DataFrame, idx: pd.DataFrame) -> pd.Series:
     return opts.groupby("timestamp")["underlying_spot"].last().dropna()
 
 
-PCR_COLS = ["spot", "ce_oi", "pe_oi", "pcr", "pcr_chg", "pcr_chg_pct", "ce_oi_chg", "pe_oi_chg", "chg_oi_pcr",
+PCR_COLS = ["spot", "ce_oi", "pe_oi", "pcr", "pcr_prev", "pcr_chg", "pcr_chg_pct", "ce_oi_chg", "pe_oi_chg", "chg_oi_pcr",
             "pcr_chg_open",
             "pcr_chg_open_pct", "ce_volume", "pe_volume", "pcr_volume", "contracts"]
 
@@ -121,8 +121,9 @@ def pcr(opts: pd.DataFrame, spot: pd.Series = None) -> pd.DataFrame:
     out["pe_oi_chg"] = oi_chg.loc[:, is_pe].sum(axis=1, min_count=1)
     out["chg_oi_pcr"] = out["pe_oi_chg"] / out["ce_oi_chg"].where(out["ce_oi_chg"] != 0)
     day = out.index.date
-    out["pcr_chg"] = out.groupby(day)["pcr"].diff()
-    out["pcr_chg_pct"] = out.groupby(day)["pcr"].pct_change(fill_method=None) * 100
+    out["pcr_prev"] = out.groupby(day)["pcr"].shift()        # actual PCR at the previous candle
+    out["pcr_chg"] = out["pcr"] - out["pcr_prev"]
+    out["pcr_chg_pct"] = (out["pcr"] / out["pcr_prev"] - 1) * 100
     first = out.groupby(day)["pcr"].transform("first")
     out["pcr_chg_open"] = out["pcr"] - first
     out["pcr_chg_open_pct"] = (out["pcr"] / first - 1) * 100

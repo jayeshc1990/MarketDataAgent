@@ -17,7 +17,7 @@ from analysis import data as D  # noqa: E402
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TIMEFRAMES = ("1min", "5min")
-ROUND = {"pcr": 4, "pcr_chg": 4, "chg_oi_pcr": 4, "pcr_chg_open": 4, "pcr_volume": 4,
+ROUND = {"pcr": 4, "pcr_prev": 4, "pcr_chg": 4, "chg_oi_pcr": 4, "pcr_chg_open": 4, "pcr_volume": 4,
          "pcr_chg_pct": 2, "pcr_chg_open_pct": 2, "spot": 2}
 
 
