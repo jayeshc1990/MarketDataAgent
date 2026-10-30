@@ -16,6 +16,7 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from analysis import auth  # noqa: E402
 from analysis import data as D  # noqa: E402
+from analysis import setups_backtest as BT  # noqa: E402
 
 st.set_page_config(page_title=auth.PUBLIC_NAME, layout="centered")    # neutral name until logged in
 auth.require_login()     # nothing below runs (no data is read) until the user has logged in
@@ -117,7 +118,7 @@ if not iv_s.empty:
 st.caption(f"Latest bar: {pd.Timestamp(last_t):%a %d %b %H:%M} · PCR / max pain use only the tracked strikes")
 
 tabs = st.tabs(["Overview", "PCR", "Open interest", "Build-up", "Volatility & gamma", "Order flow", "Contract",
-                "Data explorer"])
+                "Data explorer", "Backtest"])
 
 # ---------------------------------------------------------------- overview
 with tabs[0]:
@@ -507,3 +508,131 @@ with tabs[7]:
     st.dataframe(result, width="stretch", height=560, hide_index=True)
     st.download_button("Download these rows (CSV)", result.to_csv(index=False), "query_result.csv",
                        disabled=result.empty)
+
+# ---------------------------------------------------------------- backtest (4 frozen setups)
+SETUP_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
+                "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day"}
+SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51"]))
+
+
+@st.cache_data(show_spinner="Running the 4 setups ...", max_entries=8)
+def _run_backtest(raw: pd.DataFrame) -> pd.DataFrame:
+    return BT.run_setups(raw)
+
+
+def _scoreboard_view(trades: pd.DataFrame, key: str):
+    """Totals table, daily + cumulative net charts for a set of trades."""
+    tot, per_day = BT.scoreboard(trades)
+    cols = st.columns(len(BT.SETUPS))
+    for c, (name, r) in zip(cols, tot.iterrows()):
+        c.metric(SETUP_LABELS[name], f"{r.net_total:+.1f} pts",
+                 f"{r.trades} trades · {r.win_rate:.0%} win" if r.trades else "no trades", delta_color="off")
+    show = tot.rename(index=SETUP_LABELS).rename(columns=lambda c: c.replace("_", " "))
+    st.dataframe(show.style.format({"win rate": "{:.0%}", "net per trade": "{:+.1f}", "net total": "{:+.1f}",
+                                    "best": "{:+.1f}", "worst": "{:+.1f}", "worst day": "{:+.1f}"}, na_rep="–"),
+                 width="stretch")
+    if per_day.empty:
+        return
+    pdl = per_day.fillna(0).rename(columns=SETUP_LABELS)
+    pdl.index = pd.to_datetime(pdl.index).strftime("%d %b")
+    c1, c2 = st.columns(2)
+    f = go.Figure([go.Bar(x=pdl.index, y=pdl[s], name=s, marker_color=SETUP_COLORS[k])
+                   for k, s in SETUP_LABELS.items()])
+    f.update_layout(title="Net points per day", barmode="group", height=360, margin=dict(t=50, b=20),
+                    xaxis_type="category")
+    c1.plotly_chart(f, width="stretch", key=f"{key}_bar")
+    cum = pdl.cumsum()
+    f = go.Figure([go.Scatter(x=cum.index, y=cum[s], name=s, mode="lines+markers",
+                              line=dict(color=SETUP_COLORS[k])) for k, s in SETUP_LABELS.items()])
+    f.update_layout(title="Cumulative net points", height=360, margin=dict(t=50, b=20), xaxis_type="category")
+    c2.plotly_chart(f, width="stretch", key=f"{key}_cum")
+
+
+def _trades_view(trades: pd.DataFrame, key: str):
+    pick = st.radio("Show trades for", list(SETUP_LABELS), format_func=SETUP_LABELS.get, horizontal=True, key=key)
+    t = trades[trades.setup == pick].drop(columns="setup")
+    num = st.column_config.NumberColumn
+    st.dataframe(t, width="stretch", hide_index=True, height=min(38 + 35 * max(len(t), 1), 560),
+                 column_config={"entry": st.column_config.DatetimeColumn(format="DD MMM HH:mm"),
+                                "exit": st.column_config.DatetimeColumn(format="HH:mm"),
+                                "entry_px": num(format="%.2f"), "exit_px": num(format="%.2f"),
+                                "pnl": num("gross pts", format="%+.2f"), "net": num("net pts", format="%+.2f")})
+
+
+with tabs[8]:
+    st.subheader("Forward test of the 4 setups")
+    with st.expander("Rules and how to read this"):
+        st.markdown(
+            "**Entry (all setups):** ITM option (|delta| ≥ 0.55, the one closest to 0.60), spot moved ≥ 10 pts in the "
+            "trade's direction over the last 15 min, and 3-min writer flow in its favour (put OI added minus call OI "
+            "added, strikes within ±300 of spot: > 0 for CE, < 0 for PE). Entries 10:00–14:45 only.\n\n"
+            "**Exit:** stop −15 at first, then trail 20 below the highest price since entry; no time exit; anything "
+            "open is closed at 14:45. One position at a time. **Net** = points after 2 pts cost per trade "
+            "(brokerage, STT, fees, GST, stamp, slippage).\n\n"
+            "**Setups:** 1 no limits · 2 wait 10 min after each exit · 3 = 2 + max 5 trades/day · "
+            "4 = 2 + max 3 trades/day.\n\n"
+            "- Entry/exit times are 1-min candle start times; the price is that candle's close.\n"
+            "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
+            f"- {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} are the days the rules were found on; "
+            "judge the setups on later days only.")
+
+    src = st.radio("Data", ["Collected data (this expiry)", "Upload CSV files"], horizontal=True, key="bt_src")
+    raw = pd.DataFrame()
+    if src.startswith("Collected"):
+        opts1 = opts_all if tf == "1min" else load(str(root), underlying, expiry, "1min", sig)[0]
+        bt_days = st.multiselect("Days to test", days, default=sel_days, key="bt_days",
+                                 format_func=lambda d: d.strftime("%a %d %b"))
+        st.caption("Uses all strikes of this expiry at 1-min, whatever the sidebar strike range / candle setting.")
+        if bt_days:
+            raw = opts1[opts1["date"].isin(bt_days)]
+    else:
+        ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",
+                               accept_multiple_files=True, key="bt_upload")
+        if ups:
+            try:
+                raw = BT.load_csvs(ups)
+            except Exception as e:
+                st.error(f"Could not read the files: {e}")
+
+    jpath = BT.journal_path()
+    c1, c2 = st.columns([1, 3])
+    save = c2.checkbox("Save these days to the forward-test journal (replaces those days if already saved)",
+                       value=True, key="bt_save")
+    if c1.button("Run backtest", type="primary", disabled=raw.empty, key="bt_run"):
+        try:
+            trades = _run_backtest(raw)
+        except ValueError as e:
+            st.error(f"Can't run on this data: {e}")
+            st.stop()
+        tested = sorted(pd.to_datetime(raw["timestamp"]).dt.date.unique())
+        st.session_state["bt_result"] = (trades, tested)
+        if save:
+            BT.update_journal(trades, tested, jpath)
+            st.toast(f"Saved {len(tested)} day(s) to the journal")
+
+    if "bt_result" in st.session_state:
+        trades, tested = st.session_state["bt_result"]
+        st.markdown(f"#### This run · {len(tested)} day(s): {', '.join(f'{d:%d %b}' for d in tested)}")
+        _scoreboard_view(trades, "run")
+        _trades_view(trades, "run_pick")
+        st.download_button("Download these trades (CSV)", trades.to_csv(index=False), "backtest_trades.csv",
+                           key="bt_dl_run")
+
+    st.divider()
+    st.markdown("#### Forward-test journal (all saved days)")
+    journal = BT.read_journal(jpath)
+    if journal.empty:
+        st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
+    else:
+        fwd_only = st.toggle(f"Only days after the rule-finding days ({max(BT.BASELINE_DAYS):%d %b})", value=True,
+                             key="bt_fwd")
+        jv = journal[~journal.day.isin(BT.BASELINE_DAYS)] if fwd_only else journal
+        if jv.empty:
+            st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")
+        else:
+            st.caption(f"{jv.day.nunique()} day(s) · journal file: `{jpath}`")
+            _scoreboard_view(jv, "jr")
+            with st.expander("All journal trades"):
+                _trades_view(jv, "jr_pick")
+            st.download_button("Download journal (CSV)", jv.to_csv(index=False), "setups_journal.csv",
+                               key="bt_dl_jr")

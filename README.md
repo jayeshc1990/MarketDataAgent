@@ -101,6 +101,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
 | Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
 | Data explorer | every row in a sortable table: Excel-like column filters, or SQL (DuckDB) over `options` and `index_data`, with example queries and CSV download |
+| Backtest | runs the 4 frozen option-buying setups on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
 
 Each tab has a "How to read this" note.
 
@@ -156,6 +157,16 @@ bash deploy/setup_pcr.sh
 Run it by hand any time: `.venv/bin/python analysis/export_pcr.py` (add `--all` to rebuild every expiry).
 
 Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streamlit run analysis/app.py`.
+
+### Backtest of the 4 setups
+
+`analysis/setups_backtest.py` holds the rules (in its docstring) and runs them for the dashboard's Backtest tab.
+Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. 28–30 Oct 2026
+are the days the rules were found on, so the journal view hides them by default. The same can be run by hand on
+combined option CSVs (Data explorer export format):
+```bash
+.venv/bin/python analysis/setups_backtest.py Full_data.csv [more.csv ...]   # --no-save, --journal PATH
+```
 
 ## Notes / limits
 
