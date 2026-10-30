@@ -553,7 +553,8 @@ def _trades_view(trades: pd.DataFrame, key: str):
     t = trades[trades.setup == pick].drop(columns="setup")
     num = st.column_config.NumberColumn
     st.dataframe(t, width="stretch", hide_index=True, height=min(38 + 35 * max(len(t), 1), 560),
-                 column_config={"entry": st.column_config.DatetimeColumn(format="DD MMM HH:mm"),
+                 column_config={"signal": st.column_config.DatetimeColumn(format="DD MMM HH:mm"),
+                                "entry": st.column_config.DatetimeColumn(format="HH:mm"),
                                 "exit": st.column_config.DatetimeColumn(format="HH:mm"),
                                 "entry_px": num(format="%.2f"), "exit_px": num(format="%.2f"),
                                 "pnl": num("gross pts", format="%+.2f"), "net": num("net pts", format="%+.2f")})
@@ -565,13 +566,18 @@ with tabs[8]:
         st.markdown(
             "**Entry (all setups):** ITM option (|delta| ≥ 0.55, the one closest to 0.60), spot moved ≥ 10 pts in the "
             "trade's direction over the last 15 min, and 3-min writer flow in its favour (put OI added minus call OI "
-            "added, strikes within ±300 of spot: > 0 for CE, < 0 for PE). Entries 10:00–14:45 only.\n\n"
-            "**Exit:** stop −15 at first, then trail 20 below the highest price since entry; no time exit; anything "
+            "added, strikes within ±300 of spot: > 0 for CE, < 0 for PE). Signals 10:00–14:45 only. The buy is on "
+            "the **next candle at its high** (worst fill), and is skipped if that candle is 14:45 or later.\n\n"
+            "**Exit:** checked from the candle after the entry candle: stop −15 at first, then trail 20 below the "
+            "highest price since entry; no time exit; anything "
             "open is closed at 14:45. One position at a time. **Net** = points after 2 pts cost per trade "
             "(brokerage, STT, fees, GST, stamp, slippage).\n\n"
             "**Setups:** 1 no limits · 2 wait 10 min after each exit · 3 = 2 + max 5 trades/day · "
             "4 = 2 + max 3 trades/day.\n\n"
-            "- Entry/exit times are 1-min candle start times; the price is that candle's close.\n"
+            "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
+            "next candle (bought at its high), **exit** = candle where the stop was hit (sold at the stop price).\n"
+            "- Journal days saved before the next-candle-high entry rule used the signal candle's close; "
+            "re-run those days to replace them.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
             f"- {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} are the days the rules were found on; "
             "judge the setups on later days only.")

@@ -161,6 +161,7 @@ Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streaml
 ### Backtest of the 4 setups
 
 `analysis/setups_backtest.py` holds the rules (in its docstring) and runs them for the dashboard's Backtest tab.
+A trade is bought on the candle after the signal candle, at that candle's high (worst fill).
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. 28–30 Oct 2026
 are the days the rules were found on, so the journal view hides them by default. The same can be run by hand on
 combined option CSVs (Data explorer export format):

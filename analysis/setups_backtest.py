@@ -10,8 +10,11 @@ Rules (shared by all setups)
   Entry  : ITM option (|delta| >= 0.55), spot moved >= +10 pts in our direction over the
            last 15 min, and 3-min writer flow in our favour (put OI minus call OI change,
            strikes within +-300 of spot; CE wants > 0, PE wants < 0).
-           Entries only 10:00-14:45; contract = the one with delta closest to 0.60.
-  Exit   : initial stop -15, trailing stop 20 below the highest high since entry,
+           Signals only 10:00-14:45; contract = the one with delta closest to 0.60.
+           Bought on the candle after the signal candle, at that candle's HIGH (worst fill);
+           no entry if that candle is 14:45 or later.
+  Exit   : checked from the candle after the entry candle: initial stop -15, trailing stop 20
+           below the highest high since entry,
            no time exit, forced close at 14:45. One position at a time.
   Setups : 1 no limits | 2 10-min cooldown after exit | 3 cooldown + max 5/day | 4 cooldown + max 3/day
 """
@@ -82,9 +85,10 @@ def signals(d):
     return s.sort_values("dd").groupby(["type", "timestamp"]).head(1).sort_values(["timestamp", "dd"])
 
 
-def run_exit(g, i):
-    c0 = g.close.iat[i]; stop = c0 - INITIAL_SL; peak = c0
-    for j in range(i + 1, len(g)):
+def run_exit(g, e, c0):
+    """Bought at c0 during candle e; the stop is checked from the candle after e."""
+    stop = c0 - INITIAL_SL; peak = c0
+    for j in range(e + 1, len(g)):
         if g.tod.iat[j] >= FORCED_EXIT:
             return g.close.iat[j - 1], j - 1, "forced_14:45"
         if g.low.iat[j] <= stop:
@@ -103,14 +107,17 @@ def backtest(d, sig, cooldown, max_per_day):
             if r.timestamp <= free_at or (max_per_day and count >= max_per_day):
                 continue
             g = px[(day, r.symbol)]
-            i = int(np.flatnonzero(g.timestamp.values == r.timestamp.to_datetime64())[0])
-            exit_px, j, why = run_exit(g, i)
+            e = int(np.flatnonzero(g.timestamp.values == r.timestamp.to_datetime64())[0]) + 1   # entry candle
+            if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
+                continue
+            entry_px = g.high.iat[e]          # worst fill: the high of the candle after the signal
+            exit_px, j, why = run_exit(g, e, entry_px)
             count += 1
             free_at = g.timestamp.iat[j] + pd.Timedelta(minutes=cooldown)
-            pnl = exit_px - r.close
-            trades.append(dict(day=day.date(), entry=r.timestamp, exit=g.timestamp.iat[j], symbol=r.symbol,
-                               side=r.type, entry_px=r.close, exit_px=round(exit_px, 2), pnl=round(pnl, 2),
-                               net=round(pnl - COST_PTS, 2), mins=j - i, exit_reason=why))
+            pnl = exit_px - entry_px
+            trades.append(dict(day=day.date(), signal=r.timestamp, entry=g.timestamp.iat[e], exit=g.timestamp.iat[j],
+                               symbol=r.symbol, side=r.type, entry_px=entry_px, exit_px=round(exit_px, 2),
+                               pnl=round(pnl, 2), net=round(pnl - COST_PTS, 2), mins=j - e, exit_reason=why))
     return pd.DataFrame(trades)
 
 
@@ -120,7 +127,7 @@ def run_setups(raw: pd.DataFrame) -> pd.DataFrame:
     sig = signals(d)
     out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in SETUPS.items()]
     out = [t for t in out if len(t)]
-    cols = ["setup", "day", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
+    cols = ["setup", "day", "signal", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
             "exit_reason"]
     return pd.concat(out, ignore_index=True)[cols] if out else pd.DataFrame(columns=cols)
 
@@ -143,7 +150,10 @@ def scoreboard(trades: pd.DataFrame):
 def read_journal(path: Path) -> pd.DataFrame:
     if not Path(path).exists():
         return pd.DataFrame(columns=["setup", "day"])
-    j = pd.read_csv(path, parse_dates=["entry", "exit"])
+    j = pd.read_csv(path)
+    for c in ("signal", "entry", "exit"):
+        if c in j:
+            j[c] = pd.to_datetime(j[c])
     j["day"] = pd.to_datetime(j.day).dt.date
     return j
 
@@ -173,7 +183,8 @@ def main():
         t = trades[trades.setup == name]
         print(f"\n### {name}: {len(t)} trades, net {t.net.sum():+.1f} pts")
         if len(t):
-            show = t.assign(entry=t.entry.dt.strftime("%d-%b %H:%M"), exit=t.exit.dt.strftime("%H:%M"))
+            show = t.assign(signal=t.signal.dt.strftime("%d-%b %H:%M"), entry=t.entry.dt.strftime("%H:%M"),
+                            exit=t.exit.dt.strftime("%H:%M"))
             print(show.drop(columns=["setup", "day"]).to_string(index=False))
     if a.no_save:
         return
