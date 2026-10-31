@@ -26,6 +26,7 @@ CE_COLOR, PE_COLOR, SPOT_COLOR = "#2a9d8f", "#e76f51", "#264653"
 BUILDUP_COLORS = {"Long build-up": "#2a9d8f", "Short covering": "#8ecae6",
                   "Short build-up": "#e76f51", "Long unwinding": "#f4a261"}
 REFRESH_SECONDS = 30   # how often the page checks the CSVs for new bars
+DEFAULT_INDEX = "NIFTY"   # index selected when the page opens (if it has data)
 # hide nights and weekends on time axes
 RANGEBREAKS = [dict(bounds=["sat", "mon"]), dict(bounds=[15.5, 9.25], pattern="hour")]
 
@@ -57,7 +58,8 @@ unders = D.list_underlyings(root)
 if not unders:
     st.error(f"No collected data found in {root}")
     st.stop()
-underlying = st.sidebar.selectbox("Index", unders)
+underlying = st.sidebar.selectbox("Index", unders,
+                                  index=unders.index(DEFAULT_INDEX) if DEFAULT_INDEX in unders else 0)
 expiry = st.sidebar.selectbox("Expiry", D.list_expiries(root, underlying))
 tf = st.sidebar.radio("Candle", ["1min", "5min"], horizontal=True)
 watched = (root / underlying / expiry, root / underlying / "INDEX")
