@@ -128,7 +128,9 @@ If your VPS provider has its own firewall, allow TCP 8501 there too.
 * The login page and browser tab only show "Library Management" (`PUBLIC_NAME` in `analysis/auth.py`); the real
   dashboard appears after login.
 * 5 wrong attempts from one IP lock that IP out for 15 minutes.
-* Reloading the page logs you out (each browser tab is its own session).
+* You stay logged in for 7 days (`SESSION_DAYS` in `analysis/auth.py`) through page reloads, new tabs,
+  dropped connections and dashboard restarts; the browser keeps a signed cookie. **Log out** ends it.
+  Changing the passwords logs every browser out.
 * In public mode the dashboard refuses to start without a login configured.
 * Back to tunnel-only: `bash deploy/setup_ui.sh`
 
