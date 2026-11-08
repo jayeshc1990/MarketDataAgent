@@ -111,7 +111,10 @@ def pcr(opts: pd.DataFrame, spot: pd.Series = None) -> pd.DataFrame:
     # OI added today, per contract from its first bar of the day, so a strike that starts being
     # tracked mid-day counts only what is added after it joined, not its whole OI
     oi_chg = oi - oi.groupby(oi.index.date).transform("first")
-    vol = opts.pivot_table(index="timestamp", columns="symbol", values="volume", aggfunc="sum").reindex(oi.index)
+    # same rows and contracts as `oi`: a contract can have OI but no volume yet (or the reverse),
+    # and pivot_table drops contracts with no values at all
+    vol = opts.pivot_table(index="timestamp", columns="symbol", values="volume",
+                           aggfunc="sum").reindex(index=oi.index, columns=oi.columns)
     is_pe = (opts.groupby("symbol")["type"].first() == "PE").reindex(oi.columns).to_numpy()
     out = pd.DataFrame(index=oi.index)
     out["spot"] = spot.reindex(out.index) if spot is not None else np.nan
