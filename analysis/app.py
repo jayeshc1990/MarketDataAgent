@@ -511,24 +511,25 @@ with tabs[7]:
     st.download_button("Download these rows (CSV)", result.to_csv(index=False), "query_result.csv",
                        disabled=result.empty)
 
-# ---------------------------------------------------------------- backtest (4 frozen setups)
+# ---------------------------------------------------------------- backtest (frozen setups)
 SETUP_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
-                "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day"}
-SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51"]))
+                "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
+                BT.SR_SETUP: "5 · S/R + trend + PCR"}
+SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93"]))
 
 
-@st.cache_data(show_spinner="Running the 4 setups ...", max_entries=8)
-def _run_backtest(raw: pd.DataFrame) -> pd.DataFrame:
-    return BT.run_setups(raw)
+@st.cache_data(show_spinner="Running the setups ...", max_entries=8)
+def _run_backtest(raw: pd.DataFrame, index_dir) -> pd.DataFrame:
+    return BT.run_setups(raw, index_dir)
 
 
 def _scoreboard_view(trades: pd.DataFrame, key: str):
     """Totals table, daily + cumulative net charts for a set of trades."""
     tot, per_day = BT.scoreboard(trades)
-    cols = st.columns(len(BT.SETUPS))
+    cols = st.columns(len(BT.ALL_SETUPS))
     for c, (name, r) in zip(cols, tot.iterrows()):
         c.metric(SETUP_LABELS[name], f"{r.net_total:+.1f} pts",
-                 f"{r.trades} trades · {r.win_rate:.0%} win" if r.trades else "no trades", delta_color="off")
+                 f"{int(r.trades)} trades · {r.win_rate:.0%} win" if r.trades else "no trades", delta_color="off")
     show = tot.rename(index=SETUP_LABELS).rename(columns=lambda c: c.replace("_", " "))
     st.dataframe(show.style.format({"win rate": "{:.0%}", "net per trade": "{:+.1f}", "net total": "{:+.1f}",
                                     "best": "{:+.1f}", "worst": "{:+.1f}", "worst day": "{:+.1f}"}, na_rep="–"),
@@ -563,7 +564,7 @@ def _trades_view(trades: pd.DataFrame, key: str):
 
 
 with tabs[8]:
-    st.subheader("Forward test of the 4 setups")
+    st.subheader("Forward test of the setups")
     with st.expander("Rules and how to read this"):
         st.markdown(
             "**Entry (all setups):** ITM option (|delta| ≥ 0.55, the one closest to 0.60), spot moved ≥ 10 pts in the "
@@ -576,19 +577,27 @@ with tabs[8]:
             "(brokerage, STT, fees, GST, stamp, slippage).\n\n"
             "**Setups:** 1 no limits · 2 wait 10 min after each exit · 3 = 2 + max 5 trades/day · "
             "4 = 2 + max 3 trades/day.\n\n"
+            "**Setup 5 · support/resistance + trend + PCR** (its own rules): support = biggest put-OI strike below "
+            "spot, previous day's low and close, first 15-min low, day's low so far; resistance = the same on the "
+            "call / high side. On each 5-min spot candle (09:30–14:25) a **bounce** off support or a **breakout** "
+            "above resistance → CE, a **rejection** or **breakdown** → PE, taken only if spot is on the trade's side "
+            "of the day's open, PCR since the open moved the trade's way and there are ≥ 40 pts to the next level. "
+            "ITM option (delta ≈ 0.62), bought at the next 1-min candle's high. Exit when spot goes 15 pts back "
+            "through the level, reaches the next level, the option falls 30, or at 14:45. One position at a time, "
+            "max 3 a day, **never on the expiry day** of the traded expiry. The **detail** column names the event.\n\n"
             "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
             "next candle (bought at its high), **exit** = candle where the stop was hit (sold at the stop price).\n"
             "- Journal days saved before the next-candle-high entry rule used the signal candle's close; "
             "re-run those days to replace them.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
-            f"- {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} are the days the rules were found on; "
-            "judge the setups on later days only.")
+            f"- Rules were found on {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} (setups 1–4) and "
+            f"on data up to {BT.SR_FOUND_UNTIL:%d %b} (setup 5); judge each setup on later days only.")
 
     src = st.radio("Data", ["Collected data (this expiry)", "Upload CSV files"], horizontal=True, key="bt_src")
     raw = pd.DataFrame()
     if src.startswith("Collected"):
         opts1 = opts_all if tf == "1min" else load(str(root), underlying, expiry, "1min", sig)[0]
-        bt_days = st.multiselect("Days to test", days, default=sel_days, key="bt_days",
+        bt_days = st.multiselect("Days to test", days, default=sel_days, key=f"bt_days_{underlying}_{expiry}",
                                  format_func=lambda d: d.strftime("%a %d %b"))
         st.caption("Uses all strikes of this expiry at 1-min, whatever the sidebar strike range / candle setting.")
         if bt_days:
@@ -608,7 +617,7 @@ with tabs[8]:
                        value=True, key="bt_save")
     if c1.button("Run backtest", type="primary", disabled=raw.empty, key="bt_run"):
         try:
-            trades = _run_backtest(raw)
+            trades = _run_backtest(raw, str(root / underlying / "INDEX") if src.startswith("Collected") else None)
         except ValueError as e:
             st.error(f"Can't run on this data: {e}")
             st.stop()
@@ -632,9 +641,9 @@ with tabs[8]:
     if journal.empty:
         st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
     else:
-        fwd_only = st.toggle(f"Only days after the rule-finding days ({max(BT.BASELINE_DAYS):%d %b})", value=True,
-                             key="bt_fwd")
-        jv = journal[~journal.day.isin(BT.BASELINE_DAYS)] if fwd_only else journal
+        fwd_only = st.toggle(f"Only days after each setup's rule-finding days ({max(BT.BASELINE_DAYS):%d %b} for "
+                             f"1–4, {BT.SR_FOUND_UNTIL:%d %b} for 5)", value=True, key="bt_fwd")
+        jv = BT.forward_only(journal) if fwd_only else journal
         if jv.empty:
             st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")
         else:
