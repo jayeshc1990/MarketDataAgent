@@ -53,7 +53,7 @@ extras:
 #   option_types: CE and/or PE
 options:
   NIFTY:
-    expiries: 1
+    expiries: 2                 # this week + next week (setup 6 trades next week's expiry on Mon/Tue)
     strikes_each_side: 5        # 11 strikes: ATM +/- 500 points
     strike_multiple: 100
     option_types: [CE, PE]

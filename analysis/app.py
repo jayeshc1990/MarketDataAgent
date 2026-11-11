@@ -60,7 +60,10 @@ if not unders:
     st.stop()
 underlying = st.sidebar.selectbox("Index", unders,
                                   index=unders.index(DEFAULT_INDEX) if DEFAULT_INDEX in unders else 0)
-expiry = st.sidebar.selectbox("Expiry", D.list_expiries(root, underlying))
+expiries = D.list_expiries(root, underlying)          # newest first
+upcoming = [e for e in expiries if e >= pd.Timestamp.now(tz="Asia/Kolkata").strftime("%Y-%m-%d")]
+expiry = st.sidebar.selectbox("Expiry", expiries,      # default: the nearest expiry not yet past
+                              index=expiries.index(upcoming[-1]) if upcoming else 0)
 tf = st.sidebar.radio("Candle", ["1min", "5min"], horizontal=True)
 watched = (root / underlying / expiry, root / underlying / "INDEX")
 sig = D.files_signature(*watched)
@@ -514,8 +517,24 @@ with tabs[7]:
 # ---------------------------------------------------------------- backtest (frozen setups)
 SETUP_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
                 "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
-                BT.SR_SETUP: "5 · S/R + trend + PCR"}
-SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93"]))
+                BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue"}
+SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d"]))
+
+
+@st.cache_data(show_spinner="Loading expiry data ...", max_entries=16)
+def _bt_options(root: str, underlying: str, expiry: str, sig) -> pd.DataFrame:
+    return D.load_options(Path(root), underlying, expiry, "1min")    # `sig` reloads it when files change
+
+
+def _bt_raw(days_sel) -> pd.DataFrame:
+    """1-min rows for the chosen days from each day's two nearest collected expiries (setup 6 needs the
+    second one on Mon/Tue); run_setups picks the right expiry per setup."""
+    need = set()
+    for d in days_sel:
+        need.update(sorted(e for e in expiries if e >= d.isoformat())[:2])
+    parts = [_bt_options(str(root), underlying, e, D.files_signature(root / underlying / e)) for e in sorted(need)]
+    parts = [p[p["date"].isin(days_sel)] for p in parts if not p.empty]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 @st.cache_data(show_spinner="Running the setups ...", max_entries=8)
@@ -585,23 +604,29 @@ with tabs[8]:
             "ITM option (delta ≈ 0.62), bought at the next 1-min candle's high. Exit when spot goes 15 pts back "
             "through the level, reaches the next level, the option falls 30, or at 14:45. One position at a time, "
             "max 3 a day, **never on the expiry day** of the traded expiry. The **detail** column names the event.\n\n"
+            "**Setup 6 · setup 5 with fewer losers:** same as 5, plus PCR since the open moved **≥ 0.05** the "
+            "trade's way, spot within **30 pts** of the level at the signal, and only expiries **≥ 2 days away** — "
+            "so on **Monday and Tuesday it trades next week's expiry** (levels and PCR then come from that chain). "
+            "Days without a collected next expiry are skipped.\n\n"
             "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
             "next candle (bought at its high), **exit** = candle where the stop was hit (sold at the stop price).\n"
             "- Journal days saved before the next-candle-high entry rule used the signal candle's close; "
             "re-run those days to replace them.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
             f"- Rules were found on {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} (setups 1–4) and "
-            f"on data up to {BT.SR_FOUND_UNTIL:%d %b} (setup 5); judge each setup on later days only.")
+            f"on data up to {BT.SR_FOUND_UNTIL:%d %b} (setups 5–6); judge each setup on later days only.")
 
-    src = st.radio("Data", ["Collected data (this expiry)", "Upload CSV files"], horizontal=True, key="bt_src")
-    raw = pd.DataFrame()
+    src = st.radio("Data", ["Collected data", "Upload CSV files"], horizontal=True, key="bt_src")
+    raw, bt_days = pd.DataFrame(), []
     if src.startswith("Collected"):
-        opts1 = opts_all if tf == "1min" else load(str(root), underlying, expiry, "1min", sig)[0]
-        bt_days = st.multiselect("Days to test", days, default=sel_days, key=f"bt_days_{underlying}_{expiry}",
-                                 format_func=lambda d: d.strftime("%a %d %b"))
-        st.caption("Uses all strikes of this expiry at 1-min, whatever the sidebar strike range / candle setting.")
-        if bt_days:
-            raw = opts1[opts1["date"].isin(bt_days)]
+        trading_days = sorted({pd.Timestamp(p.name.split("_")[-2]).date()
+                               for p in (root / underlying / "INDEX").glob(f"{underlying}_INDEX_*_1min.csv")}
+                              | set(days), reverse=True)
+        bt_days = st.multiselect("Days to test", trading_days, default=[d for d in sel_days if d in trading_days],
+                                 key=f"bt_days_{underlying}", format_func=lambda d: d.strftime("%a %d %b"))
+        st.caption("Each day uses its collected expiries at 1-min, all strikes (the sidebar expiry, strike range and "
+                   "candle don't matter here): setups 1–5 trade the nearest expiry, setup 6 the nearest one at least "
+                   "2 days away (next week's on Mon/Tue).")
     else:
         ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",
                                accept_multiple_files=True, key="bt_upload")
@@ -615,7 +640,12 @@ with tabs[8]:
     c1, c2 = st.columns([1, 3])
     save = c2.checkbox("Save these days to the forward-test journal (replaces those days if already saved)",
                        value=True, key="bt_save")
-    if c1.button("Run backtest", type="primary", disabled=raw.empty, key="bt_run"):
+    if c1.button("Run backtest", type="primary", disabled=raw.empty and not bt_days, key="bt_run"):
+        if bt_days:
+            raw = _bt_raw(sorted(bt_days))
+            if raw.empty:
+                st.error("No option data collected for those days.")
+                st.stop()
         try:
             trades = _run_backtest(raw, str(root / underlying / "INDEX") if src.startswith("Collected") else None)
         except ValueError as e:
@@ -642,7 +672,7 @@ with tabs[8]:
         st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
     else:
         fwd_only = st.toggle(f"Only days after each setup's rule-finding days ({max(BT.BASELINE_DAYS):%d %b} for "
-                             f"1–4, {BT.SR_FOUND_UNTIL:%d %b} for 5)", value=True, key="bt_fwd")
+                             f"1–4, {BT.SR_FOUND_UNTIL:%d %b} for 5–6)", value=True, key="bt_fwd")
         jv = BT.forward_only(journal) if fwd_only else journal
         if jv.empty:
             st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")

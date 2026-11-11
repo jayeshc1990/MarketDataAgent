@@ -101,7 +101,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
 | Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
 | Data explorer | every row in a sortable table: Excel-like column filters, or SQL (DuckDB) over `options` and `index_data`, with example queries and CSV download |
-| Backtest | runs the 5 frozen option-buying setups on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
+| Backtest | runs the 6 frozen option-buying setups on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
 
 Each tab has a "How to read this" note.
 
@@ -164,10 +164,13 @@ Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streaml
 
 `analysis/setups_backtest.py` holds the rules (in its docstring) and runs them for the dashboard's Backtest tab:
 setups 1–4 (momentum + writer flow, 1-min) and setup 5 (support/resistance + day trend + PCR since the open,
-5-min events, never on the expiry day of the traded expiry; previous-day levels come from `Data/NIFTY/INDEX`).
+5-min events, never on the expiry day of the traded expiry; previous-day levels come from `Data/NIFTY/INDEX`), and
+setup 6 (setup 5 + PCR since open ≥ 0.05 + entry within 30 pts of the level, trading only expiries at least 2 days
+away, so next week's expiry on Monday and Tuesday). The collector keeps two expiries (`options.NIFTY.expiries: 2`)
+so that next week's contracts exist on those days. In the tab, each chosen day uses its own collected expiries.
 A trade is bought on the candle after the signal candle, at that candle's high (worst fill).
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. The journal view
-hides the days each setup's rules were found on (28–30 Oct 2026 for 1–4, up to 11 Nov 2026 for 5). The same can be
+hides the days each setup's rules were found on (28–30 Oct 2026 for 1–4, up to 11 Nov 2026 for 5–6). The same can be
 run by hand on combined option CSVs (Data explorer export format):
 ```bash
 .venv/bin/python analysis/setups_backtest.py Full_data.csv [more.csv ...]   # --no-save, --journal PATH, --index-dir PATH

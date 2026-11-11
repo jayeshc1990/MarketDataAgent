@@ -28,6 +28,15 @@ Setup 5 - support/resistance + day trend + PCR (own rules, see run_sr):
   Trade  : ITM option (delta 0.55-0.75, closest to 0.62), bought at the high of the next 1-min candle.
            Exit when spot goes 15 pts back through the level, spot reaches the next level, the option
            falls 30, or 14:45. One position at a time, max 3 trades a day.
+
+Setup 6 - setup 5 with fewer losers:
+  Same as setup 5, plus: PCR since the open moved at least 0.05 the trade's way, spot is within 30 pts
+  of the level at the signal, and the traded expiry is at least 2 days away. So on Monday and Tuesday of
+  an expiry week (Tuesday expiry) it trades next week's expiry, and levels / PCR come from that chain.
+  Needs the next expiry collected (config: options.NIFTY.expiries: 2); without it those days are skipped.
+
+Days and expiries: the input can hold several expiries. Setups 1-5 use each day's nearest expiry (as
+collected before 2026-11-12, one expiry); setup 6 uses each day's nearest expiry >= 2 days away.
 """
 import re
 import argparse
@@ -53,8 +62,10 @@ SETUPS = {
     "4_cooldown10_max3": dict(cooldown=10, max_per_day=3),
 }
 SR_SETUP = "5_sr_trend_pcr"
-ALL_SETUPS = list(SETUPS) + [SR_SETUP]
-SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setup 5's rules were found on data up to this day
+SR6_SETUP = "6_sr_filtered_next_expiry"
+ALL_SETUPS = list(SETUPS) + [SR_SETUP, SR6_SETUP]
+SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setups 5 and 6 were found on data up to this day
+SR6_MIN_DTE, SR6_MIN_PCR, SR6_MAX_DIST = 2, 0.05, 30
 NEEDED = ["timestamp", "symbol", "strike", "type", "high", "low", "close", "oi", "delta", "underlying_spot"]
 
 
@@ -254,8 +265,9 @@ def _sr_exit(g, e, c0, k, spot_stop, spot_target):
     return g.close.iat[-1], len(g) - 1, "data_end_open"
 
 
-def run_sr(d: pd.DataFrame, index_dir=None) -> pd.DataFrame:
-    """Setup 5 trades on prepared 1-min option data (see the module docstring)."""
+def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None) -> pd.DataFrame:
+    """Setup 5 trades on prepared 1-min option data (see the module docstring). `min_pcr` and `max_dist`
+    are setup 6's extra filters."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
@@ -269,6 +281,8 @@ def run_sr(d: pd.DataFrame, index_dir=None) -> pd.DataFrame:
         m = M.loc[r.ts]; k = 1 if r.side == "CE" else -1
         room = abs(_next_level(r.side, m) - m.spot)
         if not (k * (m.spot - m.dopen) > 0 and k * m.pcr_open > 0 and room >= SR_ROOM):
+            continue
+        if k * m.pcr_open < min_pcr or (max_dist is not None and k * (m.spot - r.L) > max_dist):
             continue
         if r.ts <= free_at or count.get(r.day, 0) >= SR_MAX_PER_DAY:
             continue
@@ -291,13 +305,30 @@ def run_sr(d: pd.DataFrame, index_dir=None) -> pd.DataFrame:
     return pd.DataFrame(trades)
 
 
+def select_chain(raw: pd.DataFrame, min_dte: int) -> pd.DataFrame:
+    """Rows of each day's nearest expiry that is at least `min_dte` days away (expiry read from the symbol)."""
+    if raw.empty:
+        return raw
+    day = pd.to_datetime(raw.timestamp).dt.normalize()
+    exp = pd.to_datetime(raw.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
+    ok = (exp - day).dt.days >= min_dte
+    pick = exp[ok].groupby(day[ok]).min()
+    return raw[ok & (exp == day.map(pick))]
+
+
 def run_setups(raw: pd.DataFrame, index_dir=None) -> pd.DataFrame:
     """All trades of all setups, one row per trade with a `setup` column. `index_dir` (the INDEX folder)
-    gives setup 5 the previous day's high/low/close; without it they come from the data's own spot."""
-    d = prepare(raw)
+    gives setups 5-6 the previous day's high/low/close; without it they come from the data's own spot."""
+    missing = [c for c in NEEDED if c not in raw]
+    if missing:
+        raise ValueError(f"missing columns: {', '.join(missing)}")
+    d = prepare(select_chain(raw, 0))
     sig = signals(d)
     out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in SETUPS.items()]
     out.append(run_sr(d, index_dir).assign(setup=SR_SETUP))
+    d6 = select_chain(raw, SR6_MIN_DTE)
+    if not d6.empty:
+        out.append(run_sr(prepare(d6), index_dir, SR6_MIN_PCR, SR6_MAX_DIST).assign(setup=SR6_SETUP))
     out = [t for t in out if len(t)]
     cols = ["setup", "day", "signal", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
             "exit_reason", "detail"]
@@ -308,7 +339,7 @@ def forward_only(j: pd.DataFrame) -> pd.DataFrame:
     """Journal rows from days after each setup's rule-finding days."""
     if j.empty:
         return j
-    found = np.where(j.setup == SR_SETUP, SR_FOUND_UNTIL, max(BASELINE_DAYS))
+    found = np.where(j.setup.isin([SR_SETUP, SR6_SETUP]), SR_FOUND_UNTIL, max(BASELINE_DAYS))
     return j[j.day.values > found]
 
 
