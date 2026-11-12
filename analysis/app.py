@@ -515,10 +515,11 @@ with tabs[7]:
                        disabled=result.empty)
 
 # ---------------------------------------------------------------- backtest (frozen setups)
-SETUP_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
-                "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
-                BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue"}
-SETUP_COLORS = dict(zip(SETUP_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d"]))
+_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
+           "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
+           BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue"}
+SETUP_COLORS = dict(zip(_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d"]))
+SETUP_LABELS = {k: v for k, v in _LABELS.items() if k in BT.ALL_SETUPS}     # only the setups that run
 
 
 @st.cache_data(show_spinner="Loading expiry data ...", max_entries=16)
@@ -586,16 +587,9 @@ with tabs[8]:
     st.subheader("Forward test of the setups")
     with st.expander("Rules and how to read this"):
         st.markdown(
-            "**Entry (all setups):** ITM option (|delta| ≥ 0.55, the one closest to 0.60), spot moved ≥ 10 pts in the "
-            "trade's direction over the last 15 min, and 3-min writer flow in its favour (put OI added minus call OI "
-            "added, strikes within ±300 of spot: > 0 for CE, < 0 for PE). Signals 10:00–14:45 only. The buy is on "
-            "the **next candle at its high** (worst fill), and is skipped if that candle is 14:45 or later.\n\n"
-            "**Exit:** checked from the candle after the entry candle: stop −15 at first, then trail 20 below the "
-            "highest price since entry; no time exit; anything "
-            "open is closed at 14:45. One position at a time. **Net** = points after 2 pts cost per trade "
-            "(brokerage, STT, fees, GST, stamp, slippage).\n\n"
-            "**Setups:** 1 no limits · 2 wait 10 min after each exit · 3 = 2 + max 5 trades/day · "
-            "4 = 2 + max 3 trades/day.\n\n"
+            "**Setups 1–4** (1-min momentum + writer flow) are **switched off**: they lost money on every day after "
+            "30 Oct. Older journal rows of theirs are ignored.\n\n"
+            "**Net** = points after 2 pts cost per trade (brokerage, STT, fees, GST, stamp, slippage).\n\n"
             "**Setup 5 · support/resistance + trend + PCR** (its own rules): support = biggest put-OI strike below "
             "spot, previous day's low and close, first 15-min low, day's low so far; resistance = the same on the "
             "call / high side. On each 5-min spot candle (09:30–14:25) a **bounce** off support or a **breakout** "
@@ -609,12 +603,9 @@ with tabs[8]:
             "so on **Monday and Tuesday it trades next week's expiry** (levels and PCR then come from that chain). "
             "Days without a collected next expiry are skipped.\n\n"
             "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
-            "next candle (bought at its high), **exit** = candle where the stop was hit (sold at the stop price).\n"
-            "- Journal days saved before the next-candle-high entry rule used the signal candle's close; "
-            "re-run those days to replace them.\n"
+            "next candle (bought at its high), **exit** = candle where the exit rule hit.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
-            f"- Rules were found on {', '.join(f'{d:%d %b}' for d in sorted(BT.BASELINE_DAYS))} (setups 1–4) and "
-            f"on data up to {BT.SR_FOUND_UNTIL:%d %b} (setups 5–6); judge each setup on later days only.")
+            f"- Rules were found on data up to {BT.SR_FOUND_UNTIL:%d %b}; judge the setups on later days only.")
 
     src = st.radio("Data", ["Collected data", "Upload CSV files"], horizontal=True, key="bt_src")
     raw, bt_days = pd.DataFrame(), []
@@ -625,7 +616,7 @@ with tabs[8]:
         bt_days = st.multiselect("Days to test", trading_days, default=[d for d in sel_days if d in trading_days],
                                  key=f"bt_days_{underlying}", format_func=lambda d: d.strftime("%a %d %b"))
         st.caption("Each day uses its collected expiries at 1-min, all strikes (the sidebar expiry, strike range and "
-                   "candle don't matter here): setups 1–5 trade the nearest expiry, setup 6 the nearest one at least "
+                   "candle don't matter here): setup 5 trades the nearest expiry, setup 6 the nearest one at least "
                    "2 days away (next week's on Mon/Tue).")
     else:
         ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",
@@ -671,9 +662,10 @@ with tabs[8]:
     if journal.empty:
         st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
     else:
-        fwd_only = st.toggle(f"Only days after each setup's rule-finding days ({max(BT.BASELINE_DAYS):%d %b} for "
-                             f"1–4, {BT.SR_FOUND_UNTIL:%d %b} for 5–6)", value=True, key="bt_fwd")
-        jv = BT.forward_only(journal) if fwd_only else journal
+        fwd_only = st.toggle(f"Only days after the rule-finding days (after {BT.SR_FOUND_UNTIL:%d %b})", value=True,
+                             key="bt_fwd")
+        jv = journal[journal.setup.isin(BT.ALL_SETUPS)]       # switched-off setups' old rows stay hidden
+        jv = BT.forward_only(jv) if fwd_only else jv
         if jv.empty:
             st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")
         else:

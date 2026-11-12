@@ -1,4 +1,5 @@
-"""Forward-test the 4 NIFTY option setups on each day's data.
+"""Forward-test the NIFTY option setups on each day's data. Setups 1-4 are switched off (see ALL_SETUPS);
+setups 5 and 6 run.
 
 Run from the dashboard (Backtest tab) or by hand on combined option CSVs (same columns as the
 Data explorer / Full_data export: timestamp, symbol, strike, type, open, high, low, close, oi,
@@ -63,7 +64,9 @@ SETUPS = {
 }
 SR_SETUP = "5_sr_trend_pcr"
 SR6_SETUP = "6_sr_filtered_next_expiry"
-ALL_SETUPS = list(SETUPS) + [SR_SETUP, SR6_SETUP]
+# Setups 1-4 lost money on every day after 30 Oct 2026, so they are switched off (2026-11-12); their code stays.
+# Add their names back here to run them again.
+ALL_SETUPS = [SR_SETUP, SR6_SETUP]
 SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setups 5 and 6 were found on data up to this day
 SR6_MIN_DTE, SR6_MIN_PCR, SR6_MAX_DIST = 2, 0.05, 30
 NEEDED = ["timestamp", "symbol", "strike", "type", "high", "low", "close", "oi", "delta", "underlying_spot"]
@@ -323,8 +326,9 @@ def run_setups(raw: pd.DataFrame, index_dir=None) -> pd.DataFrame:
     if missing:
         raise ValueError(f"missing columns: {', '.join(missing)}")
     d = prepare(select_chain(raw, 0))
-    sig = signals(d)
-    out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in SETUPS.items()]
+    active = {n: cfg for n, cfg in SETUPS.items() if n in ALL_SETUPS}
+    sig = signals(d) if active else None
+    out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in active.items()]
     out.append(run_sr(d, index_dir).assign(setup=SR_SETUP))
     d6 = select_chain(raw, SR6_MIN_DTE)
     if not d6.empty:
@@ -345,7 +349,8 @@ def forward_only(j: pd.DataFrame) -> pd.DataFrame:
 
 def scoreboard(trades: pd.DataFrame):
     """(totals per setup, net points per day x setup). Setups with no trades still get a row."""
-    t = trades.assign(day=pd.to_datetime(trades.day).dt.date, win=trades.net > 0)
+    t = trades[trades.setup.isin(ALL_SETUPS)]           # older journal rows of switched-off setups are ignored
+    t = t.assign(day=pd.to_datetime(t.day).dt.date, win=t.net > 0)
     per_day = t.groupby(["setup", "day"]).net.sum().unstack(0).reindex(columns=ALL_SETUPS).sort_index()
     tot = t.groupby("setup").agg(trades=("net", "size"), win_rate=("win", "mean"), net_per_trade=("net", "mean"),
                                  net_total=("net", "sum"), best=("net", "max"), worst=("net", "min"))

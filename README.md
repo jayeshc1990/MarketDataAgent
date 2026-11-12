@@ -101,7 +101,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
 | Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
 | Data explorer | every row in a sortable table: Excel-like column filters, or SQL (DuckDB) over `options` and `index_data`, with example queries and CSV download |
-| Backtest | runs the 6 frozen option-buying setups on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
+| Backtest | runs the frozen option-buying setups (5 and 6; 1–4 are switched off) on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
 
 Each tab has a "How to read this" note.
 
@@ -163,7 +163,8 @@ Run it locally against any copy of the data: `MDA_DATA_DIR=/path/to/Data streaml
 ### Backtest of the setups
 
 `analysis/setups_backtest.py` holds the rules (in its docstring) and runs them for the dashboard's Backtest tab:
-setups 1–4 (momentum + writer flow, 1-min) and setup 5 (support/resistance + day trend + PCR since the open,
+setups 1–4 (momentum + writer flow, 1-min; switched off in `ALL_SETUPS` after losing on every day since 30 Oct,
+code kept) and setup 5 (support/resistance + day trend + PCR since the open,
 5-min events, never on the expiry day of the traded expiry; previous-day levels come from `Data/NIFTY/INDEX`), and
 setup 6 (setup 5 + PCR since open ≥ 0.05 + entry within 30 pts of the level, trading only expiries at least 2 days
 away, so next week's expiry on Monday and Tuesday). The collector keeps two expiries (`options.NIFTY.expiries: 2`)
