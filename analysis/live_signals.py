@@ -31,7 +31,7 @@ from market_agent.config import IST, PROJECT_ROOT, Config  # noqa: E402
 
 SUMMARY_AT = pd.Timedelta("14:50:00")
 SYMBOL_RE = re.compile(r"^(?P<name>[A-Z]+)(?P<dd>\d{2})(?P<mon>[A-Z]{3})(?P<yy>\d{2})(?P<strike>\d+)(?P<type>CE|PE)$")
-SETUP_LABEL = {B.SR_SETUP: "Setup 5", B.SR6_SETUP: "Setup 6"}
+SETUP_LABEL = {B.SR_SETUP: "Setup 5", B.SR6_SETUP: "Setup 6", B.SR7_SETUP: "Setup 7"}
 EXIT_LABEL = {"option_stop": "option stop (-30)", "spot_back_through_level": "spot back through the level",
               "spot_at_next_level": "spot reached the next level", "forced_14:45": "14:45 square-off"}
 FOOTER = "<i>Forward-test signal from your own rules, not investment advice.</i>"

@@ -71,6 +71,10 @@ Re-running fetches only what is missing (newer candles, then older ones until An
 after every request, so it can be stopped and resumed. It refuses to run in market hours (it would share the
 ~10-15 candle requests/min with the live collector) unless `--force`. Expired option contracts can't be
 downloaded, because Angel One only serves live tokens.
+
+`analysis/levels.py` turns the daily history into multi-day support/resistance levels for any day (daily EMAs
+9/21/50/100/200, previous week's and month's high/low, swing zones where daily highs/lows turned 2+ times in the
+last year). Setup 7 trades them, and the Backtest tab lists them under *Multi-day levels*.
 ```bash
 .venv/bin/python fetch_history.py                         # all intervals
 .venv/bin/python fetch_history.py --intervals ONE_DAY     # only daily candles
@@ -115,7 +119,7 @@ expiry, trading days, 1/5-min candles and strike range in the sidebar.
 | Order flow | call-vs-put bid pressure and whether it leads spot moves (lead/lag correlation) |
 | Contract | one strike: candles, volume, OI, IV, delta, bid/ask ratio, CSV download |
 | Data explorer | every row in a sortable table: Excel-like column filters, or SQL (DuckDB) over `options` and `index_data`, with example queries and CSV download |
-| Backtest | runs the frozen option-buying setups (5 and 6; 1–4 are switched off) on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
+| Backtest | runs the frozen option-buying setups (5, 6 and 7; 1–4 are switched off) on chosen days (or uploaded CSVs): trades, scoreboard, daily and cumulative net points; saves results to a forward-test journal |
 
 Each tab has a "How to read this" note.
 
@@ -182,7 +186,9 @@ code kept) and setup 5 (support/resistance + day trend + PCR since the open,
 5-min events, never on the expiry day of the traded expiry; previous-day levels come from `Data/NIFTY/INDEX`), and
 setup 6 (setup 5 + PCR since open ≥ 0.05 + entry within 30 pts of the level, trading only expiries at least 2 days
 away, so next week's expiry on Monday and Tuesday). The collector keeps two expiries (`options.NIFTY.expiries: 2`)
-so that next week's contracts exist on those days. In the tab, each chosen day uses its own collected expiries.
+so that next week's contracts exist on those days. Setup 7 is setup 6 plus the multi-day levels from
+`analysis/levels.py` (daily EMAs, previous week/month high/low, swing zones). In the tab, each chosen day uses
+its own collected expiries.
 A trade is bought on the candle after the signal candle, at that candle's high (worst fill).
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. The journal view
 hides the days each setup's rules were found on (28–30 Oct 2026 for 1–4, up to 11 Nov 2026 for 5–6). The same can be

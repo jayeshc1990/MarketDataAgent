@@ -36,6 +36,12 @@ Setup 6 - setup 5 with fewer losers:
   an expiry week (Tuesday expiry) it trades next week's expiry, and levels / PCR come from that chain.
   Needs the next expiry collected (config: options.NIFTY.expiries: 2); without it those days are skipped.
 
+Setup 7 - setup 6 + multi-day levels (analysis/levels.py):
+  Same as setup 6, with more levels, each tested as support and as resistance: daily EMAs 9/21/50/100/200,
+  previous week's and month's high/low, and swing zones from a year of daily highs/lows. They also count
+  as "next level" for the room filter and the target. Needs daily history (fetch_history.py, else only
+  the collector's few INDEX days); it doesn't run on uploaded CSVs.
+
 Days and expiries: the input can hold several expiries. Setups 1-5 use each day's nearest expiry (as
 collected before 2026-11-12, one expiry); setup 6 uses each day's nearest expiry >= 2 days away.
 """
@@ -46,6 +52,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from analysis import levels as LV  # noqa: E402
 
 ENTRY_START = pd.Timedelta("10:00:00")
 FORCED_EXIT = pd.Timedelta("14:45:00")
@@ -64,10 +73,11 @@ SETUPS = {
 }
 SR_SETUP = "5_sr_trend_pcr"
 SR6_SETUP = "6_sr_filtered_next_expiry"
+SR7_SETUP = "7_sr_daily_levels"
 # Setups 1-4 lost money on every day after 30 Oct 2026, so they are switched off (2026-11-12); their code stays.
 # Add their names back here to run them again.
-ALL_SETUPS = [SR_SETUP, SR6_SETUP]
-SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setups 5 and 6 were found on data up to this day
+ALL_SETUPS = [SR_SETUP, SR6_SETUP, SR7_SETUP]
+SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setups 5-7 were found on data up to this day
 SR6_MIN_DTE, SR6_MIN_PCR, SR6_MAX_DIST = 2, 0.05, 30
 NEEDED = ["timestamp", "symbol", "strike", "type", "high", "low", "close", "oi", "delta", "underlying_spot"]
 
@@ -208,8 +218,10 @@ def _sr_market(d: pd.DataFrame, index_dir=None) -> pd.DataFrame:
     return M
 
 
-def sr_events(M: pd.DataFrame) -> pd.DataFrame:
-    """Bounce / breakout (CE) and rejection / breakdown (PE) at the close of 5-min spot candles."""
+def sr_events(M: pd.DataFrame, extra=None) -> pd.DataFrame:
+    """Bounce / breakout (CE) and rejection / breakdown (PE) at the close of 5-min spot candles.
+    `extra` ({day: [(name, level), ...]}) adds multi-day levels, each tested as support and as resistance."""
+    extra = extra or {}
     B = M.groupby(M.index.floor("5min")).agg(o=("spot", "first"), h=("spot", "max"), l=("spot", "min"),
                                              c=("spot", "last"), ts=("spot", lambda s: s.index[-1]))
     B["day"] = B.index.normalize(); B["pc"] = B.groupby("day").c.shift(1)
@@ -218,16 +230,15 @@ def sr_events(M: pd.DataFrame) -> pd.DataFrame:
     ev = []
     for _, b in B.iterrows():
         m = M.loc[b.ts]
-        for n in SUP_LEVELS:
-            L = m[n]
+        more = extra.get(b.day, [])
+        for n, L in [(n, m[n]) for n in SUP_LEVELS] + more:
             if pd.isna(L):
                 continue
             if L - SR_PIERCE <= b.l <= L + SR_TOUCH and b.c >= L + SR_CONFIRM and b.c > b.o:
                 ev.append((b.ts, "CE", "bounce", n, L))
             if pd.notna(b.pc) and b.pc >= L and b.c <= L - SR_CONFIRM:
                 ev.append((b.ts, "PE", "breakdown", n, L))
-        for n in RES_LEVELS:
-            L = m[n]
+        for n, L in [(n, m[n]) for n in RES_LEVELS] + more:
             if pd.isna(L):
                 continue
             if L - SR_TOUCH <= b.h <= L + SR_PIERCE and b.c <= L - SR_CONFIRM and b.c < b.o:
@@ -246,11 +257,12 @@ def sr_events(M: pd.DataFrame) -> pd.DataFrame:
     return E.loc[keep].reset_index(drop=True)
 
 
-def _next_level(side, m):
+def _next_level(side, m, extra=()):
+    more = [L for _, L in extra]
     if side == "CE":
-        c = [m[n] for n in RES_LEVELS if pd.notna(m[n]) and m[n] > m.spot + 15]
+        c = [x for x in [m[n] for n in RES_LEVELS] + more if pd.notna(x) and x > m.spot + 15]
         return min(c) if c else np.nan
-    c = [m[n] for n in SUP_LEVELS if pd.notna(m[n]) and m[n] < m.spot - 15]
+    c = [x for x in [m[n] for n in SUP_LEVELS] + more if pd.notna(x) and x < m.spot - 15]
     return max(c) if c else np.nan
 
 
@@ -269,22 +281,29 @@ def _sr_exit(g, e, c0, k, spot_stop, spot_target):
     return g.close.iat[-1], len(g) - 1, "data_end_open"
 
 
-def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None) -> pd.DataFrame:
+def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None, daily=None) -> pd.DataFrame:
     """Setup 5 trades on prepared 1-min option data (see the module docstring). `min_pcr` and `max_dist`
-    are setup 6's extra filters. If `pending` is a list, a signal on the data's last minute (its entry
-    candle not formed yet) is appended to it - used by the live Telegram alerts."""
+    are setup 6's extra filters; `daily` (daily candles from levels.load_daily) adds setup 7's multi-day
+    levels. If `pending` is a list, a signal on the data's last minute (its entry candle not formed yet) is
+    appended to it - used by the live Telegram alerts."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
         return pd.DataFrame()
     M = _sr_market(d, index_dir)
-    E = sr_events(M)
+    extra = {}
+    if daily is not None and len(daily):
+        for day in M.day.unique():
+            lv = LV.levels_for(daily, day)
+            extra[day] = list(zip(lv.name, lv.level))
+    E = sr_events(M, extra)
     px = {k: g.reset_index(drop=True) for k, g in d.groupby(["day", "symbol"])}
     lo, hi, tgt = SR_DELTA
     trades, free_at, count = [], pd.Timestamp.min, {}
     for _, r in E.iterrows():
         m = M.loc[r.ts]; k = 1 if r.side == "CE" else -1
-        room = abs(_next_level(r.side, m) - m.spot)
+        nxt = _next_level(r.side, m, extra.get(r.day, ()))
+        room = abs(nxt - m.spot)
         if not (k * (m.spot - m.dopen) > 0 and k * m.pcr_open > 0 and room >= SR_ROOM):
             continue
         if k * m.pcr_open < min_pcr or (max_dist is not None and k * (m.spot - r.L) > max_dist):
@@ -302,11 +321,11 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
                 and (r.ts + pd.Timedelta("1min")).minute % 5 == 0):
             pending.append(dict(day=r.day.date(), signal=r.ts, symbol=c.symbol, side=r.side,
                                 signal_close=g.close.iat[e - 1], spot=m.spot, spot_stop=r.L - k * SR_SPOT_STOP,
-                                spot_target=_next_level(r.side, m), detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
+                                spot_target=nxt, detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
         if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
             continue
         entry_px = g.high.iat[e]
-        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, _next_level(r.side, m))
+        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt)
         free_at = g.timestamp.iat[j]; count[r.day] = count.get(r.day, 0) + 1
         pnl = exit_px - entry_px
         trades.append(dict(day=r.day.date(), signal=r.ts, entry=g.timestamp.iat[e], exit=g.timestamp.iat[j],
@@ -341,10 +360,17 @@ def run_setups(raw: pd.DataFrame, index_dir=None, pending=None) -> pd.DataFrame:
     p5, p6 = [], []
     out.append(run_sr(d, index_dir, pending=p5).assign(setup=SR_SETUP))
     d6 = select_chain(raw, SR6_MIN_DTE)
+    p7 = []
     if not d6.empty:
-        out.append(run_sr(prepare(d6), index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6).assign(setup=SR6_SETUP))
+        d6 = prepare(d6)
+        out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6).assign(setup=SR6_SETUP))
+        daily = LV.load_daily(index_dir) if index_dir and Path(index_dir).exists() else None
+        if SR7_SETUP in ALL_SETUPS and daily is not None and len(daily):
+            out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p7, daily=daily)
+                       .assign(setup=SR7_SETUP))
     if pending is not None:
-        pending += [dict(x, setup=SR_SETUP) for x in p5] + [dict(x, setup=SR6_SETUP) for x in p6]
+        pending += ([dict(x, setup=SR_SETUP) for x in p5] + [dict(x, setup=SR6_SETUP) for x in p6]
+                    + [dict(x, setup=SR7_SETUP) for x in p7])
     out = [t for t in out if len(t)]
     cols = ["setup", "day", "signal", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
             "exit_reason", "detail"]
@@ -355,7 +381,7 @@ def forward_only(j: pd.DataFrame) -> pd.DataFrame:
     """Journal rows from days after each setup's rule-finding days."""
     if j.empty:
         return j
-    found = np.where(j.setup.isin([SR_SETUP, SR6_SETUP]), SR_FOUND_UNTIL, max(BASELINE_DAYS))
+    found = np.where(j.setup.isin([SR_SETUP, SR6_SETUP, SR7_SETUP]), SR_FOUND_UNTIL, max(BASELINE_DAYS))
     return j[j.day.values > found]
 
 

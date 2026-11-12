@@ -517,8 +517,9 @@ with tabs[7]:
 # ---------------------------------------------------------------- backtest (frozen setups)
 _LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
            "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
-           BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue"}
-SETUP_COLORS = dict(zip(_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d"]))
+           BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue",
+           BT.SR7_SETUP: "7 · 6 + daily EMAs & multi-day levels"}
+SETUP_COLORS = dict(zip(_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d", "#d62828"]))
 SETUP_LABELS = {k: v for k, v in _LABELS.items() if k in BT.ALL_SETUPS}     # only the setups that run
 
 
@@ -536,6 +537,11 @@ def _bt_raw(days_sel) -> pd.DataFrame:
     parts = [_bt_options(str(root), underlying, e, D.files_signature(root / underlying / e)) for e in sorted(need)]
     parts = [p[p["date"].isin(days_sel)] for p in parts if not p.empty]
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+@st.cache_data(show_spinner="Loading daily history ...", max_entries=4)
+def _daily(index_base: str, sig) -> pd.DataFrame:
+    return BT.LV.load_daily(index_base)                 # `sig` reloads it when HISTORY / INDEX files change
 
 
 @st.cache_data(show_spinner="Running the setups ...", max_entries=8)
@@ -602,10 +608,35 @@ with tabs[8]:
             "trade's way, spot within **30 pts** of the level at the signal, and only expiries **≥ 2 days away** — "
             "so on **Monday and Tuesday it trades next week's expiry** (levels and PCR then come from that chain). "
             "Days without a collected next expiry are skipped.\n\n"
+            "**Setup 7 · setup 6 + multi-day levels:** same as 6, with extra levels each tested as support and as "
+            "resistance: **daily EMAs 9 / 21 / 50 / 100 / 200**, previous **week's and month's high/low**, and "
+            "**swing zones** (daily swing highs/lows of the last year, merged within 0.25%). They also count as the "
+            "next level for the room filter and the target. Needs daily history (`fetch_history.py`); the levels "
+            "for a day are listed under *Multi-day levels* below.\n\n"
             "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
             "next candle (bought at its high), **exit** = candle where the exit rule hit.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
             f"- Rules were found on data up to {BT.SR_FOUND_UNTIL:%d %b}; judge the setups on later days only.")
+
+    with st.expander("Multi-day levels (setup 7)"):
+        daily = _daily(str(root / underlying), D.files_signature(root / underlying / "HISTORY", root / underlying / "INDEX"))
+        if daily.empty:
+            st.info("No daily history yet: run `fetch_history.py` on the server.")
+        else:
+            lv_day = st.date_input("Levels for", pd.Timestamp.now(tz="Asia/Kolkata").date(), key="lv_day")
+            lv = BT.LV.levels_for(daily, lv_day)
+            last = daily[daily.index < pd.Timestamp(lv_day)].close
+            if lv.empty or last.empty:
+                st.info("No levels for that day.")
+            else:
+                lv["vs_last_close"] = lv.level - last.iloc[-1]
+                st.caption(f"From {len(daily[daily.index < pd.Timestamp(lv_day)])} daily candles "
+                           f"({daily.index[0]:%d %b %Y} – {last.index[-1]:%d %b %Y}); last close {last.iloc[-1]:,.2f}. "
+                           "Within 5% of it, lowest first.")
+                st.dataframe(lv, hide_index=True, width="stretch",
+                             column_config={"level": st.column_config.NumberColumn(format="%.2f"),
+                                            "vs_last_close": st.column_config.NumberColumn("vs last close",
+                                                                                           format="%+.0f")})
 
     src = st.radio("Data", ["Collected data", "Upload CSV files"], horizontal=True, key="bt_src")
     raw, bt_days = pd.DataFrame(), []
@@ -616,7 +647,7 @@ with tabs[8]:
         bt_days = st.multiselect("Days to test", trading_days, default=[d for d in sel_days if d in trading_days],
                                  key=f"bt_days_{underlying}", format_func=lambda d: d.strftime("%a %d %b"))
         st.caption("Each day uses its collected expiries at 1-min, all strikes (the sidebar expiry, strike range and "
-                   "candle don't matter here): setup 5 trades the nearest expiry, setup 6 the nearest one at least "
+                   "candle don't matter here): setup 5 trades the nearest expiry, setups 6–7 the nearest one at least "
                    "2 days away (next week's on Mon/Tue).")
     else:
         ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",

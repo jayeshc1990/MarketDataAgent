@@ -86,6 +86,7 @@ greeks:
 # Bot token and chat id go in .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 signals:
   underlying: NIFTY
-  # setups from analysis/setups_backtest.py to alert on (5_sr_trend_pcr, 6_sr_filtered_next_expiry)
+  # setups from analysis/setups_backtest.py to alert on (5_sr_trend_pcr, 6_sr_filtered_next_expiry,
+  # 7_sr_daily_levels - add 7 once its backtest on the daily history looks good)
   setups: [5_sr_trend_pcr, 6_sr_filtered_next_expiry]
   stale_minutes: 3        # don't send an alert older than this (e.g. after the server was down)
