@@ -81,3 +81,11 @@ greeks:
   source: api_then_local   # api | local | api_then_local (Black-Scholes fallback)
   risk_free_rate: 0.065
   dividend_yield: 0.0
+
+# Live BUY / SELL alerts on Telegram (analysis/live_signals.py, installed by deploy/setup_signals.sh).
+# Bot token and chat id go in .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+signals:
+  underlying: NIFTY
+  # setups from analysis/setups_backtest.py to alert on (5_sr_trend_pcr, 6_sr_filtered_next_expiry)
+  setups: [5_sr_trend_pcr, 6_sr_filtered_next_expiry]
+  stale_minutes: 3        # don't send an alert older than this (e.g. after the server was down)

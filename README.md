@@ -191,6 +191,28 @@ run by hand on combined option CSVs (Data explorer export format):
 .venv/bin/python analysis/setups_backtest.py Full_data.csv [more.csv ...]   # --no-save, --journal PATH, --index-dir PATH
 ```
 
+### Telegram BUY / SELL alerts
+
+`analysis/live_signals.py` sends setup 5 and 6 trades to Telegram as they happen. Every minute (09:00–14:59 IST,
+25 s after the collector writes the minute) it replays today's collected data through the backtest code, so the
+alerts are exactly the backtest's trades:
+
+| Alert | When |
+|---|---|
+| 🟢 BUY | the 5-min candle with a setup signal has closed: contract, setup, level, spot, exit levels. The backtest buys at the high of the next 1-min candle |
+| 🔴 SELL | an alerted trade hits its exit (option −30, spot back through the level, spot at the next level, 14:45), with entry/exit prices and P&L |
+| 📋 Summary | once after 14:50: the day's alerted trades and total net points |
+
+Install on the server (asks for the bot token, finds your chat id, sends a test message, installs the timer):
+```bash
+bash deploy/setup_signals.sh
+```
+Create the bot first: in Telegram message **@BotFather** → `/newbot` → copy the token.
+Choose which setups alert in `config.yaml` → `signals.setups`. Sent alerts are remembered in
+`Data/SIGNALS/<date>.json` (nothing is sent twice; a failed send is retried next minute); alerts more than
+`signals.stale_minutes` old are skipped, e.g. after downtime. Check a past day without sending anything:
+`.venv/bin/python analysis/live_signals.py --replay 2026-11-11`. Log: `journalctl -u marketdatasignals -f`.
+
 ## Notes / limits
 
 * Volume is in units (contracts x lot size), like OI and bid/ask quantities. Angel One's REST candles report F&O volume in lots; the agent converts them.

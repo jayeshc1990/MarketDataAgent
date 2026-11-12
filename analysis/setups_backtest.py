@@ -235,6 +235,7 @@ def sr_events(M: pd.DataFrame) -> pd.DataFrame:
             if pd.notna(b.pc) and b.pc <= L and b.c >= L + SR_CONFIRM:
                 ev.append((b.ts, "CE", "breakout", n, L))
     E = pd.DataFrame(ev, columns=["ts", "side", "kind", "level", "L"])
+    E["ts"] = pd.to_datetime(E.ts)            # keeps the datetime type when there are no events
     E["day"] = E.ts.dt.normalize()
     keep, last = [], {}
     for i, r in E.sort_values("ts", kind="stable").iterrows():     # same level & kind at most once per 30 min
@@ -268,9 +269,10 @@ def _sr_exit(g, e, c0, k, spot_stop, spot_target):
     return g.close.iat[-1], len(g) - 1, "data_end_open"
 
 
-def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None) -> pd.DataFrame:
+def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None) -> pd.DataFrame:
     """Setup 5 trades on prepared 1-min option data (see the module docstring). `min_pcr` and `max_dist`
-    are setup 6's extra filters."""
+    are setup 6's extra filters. If `pending` is a list, a signal on the data's last minute (its entry
+    candle not formed yet) is appended to it - used by the live Telegram alerts."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
@@ -295,6 +297,12 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None) -> pd.Da
         c = c.iloc[(c.adelta - tgt).abs().argmin()]
         g = px[(r.day, c.symbol)]
         e = int(np.flatnonzero(g.timestamp.values == r.ts.to_datetime64())[0]) + 1
+        # live: only once the 5-min candle is complete (its last minute is in), else it can still change
+        if (e >= len(g) and pending is not None and r.ts == d.timestamp.max() and r.ts - r.day < FORCED_EXIT
+                and (r.ts + pd.Timedelta("1min")).minute % 5 == 0):
+            pending.append(dict(day=r.day.date(), signal=r.ts, symbol=c.symbol, side=r.side,
+                                signal_close=g.close.iat[e - 1], spot=m.spot, spot_stop=r.L - k * SR_SPOT_STOP,
+                                spot_target=_next_level(r.side, m), detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
         if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
             continue
         entry_px = g.high.iat[e]
@@ -319,9 +327,10 @@ def select_chain(raw: pd.DataFrame, min_dte: int) -> pd.DataFrame:
     return raw[ok & (exp == day.map(pick))]
 
 
-def run_setups(raw: pd.DataFrame, index_dir=None) -> pd.DataFrame:
+def run_setups(raw: pd.DataFrame, index_dir=None, pending=None) -> pd.DataFrame:
     """All trades of all setups, one row per trade with a `setup` column. `index_dir` (the INDEX folder)
-    gives setups 5-6 the previous day's high/low/close; without it they come from the data's own spot."""
+    gives setups 5-6 the previous day's high/low/close; without it they come from the data's own spot.
+    `pending` (a list) collects setup 5/6 signals on the last minute whose entry candle isn't there yet."""
     missing = [c for c in NEEDED if c not in raw]
     if missing:
         raise ValueError(f"missing columns: {', '.join(missing)}")
@@ -329,10 +338,13 @@ def run_setups(raw: pd.DataFrame, index_dir=None) -> pd.DataFrame:
     active = {n: cfg for n, cfg in SETUPS.items() if n in ALL_SETUPS}
     sig = signals(d) if active else None
     out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in active.items()]
-    out.append(run_sr(d, index_dir).assign(setup=SR_SETUP))
+    p5, p6 = [], []
+    out.append(run_sr(d, index_dir, pending=p5).assign(setup=SR_SETUP))
     d6 = select_chain(raw, SR6_MIN_DTE)
     if not d6.empty:
-        out.append(run_sr(prepare(d6), index_dir, SR6_MIN_PCR, SR6_MAX_DIST).assign(setup=SR6_SETUP))
+        out.append(run_sr(prepare(d6), index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6).assign(setup=SR6_SETUP))
+    if pending is not None:
+        pending += [dict(x, setup=SR_SETUP) for x in p5] + [dict(x, setup=SR6_SETUP) for x in p6]
     out = [t for t in out if len(t)]
     cols = ["setup", "day", "signal", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
             "exit_reason", "detail"]

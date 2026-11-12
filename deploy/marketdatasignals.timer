@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the setups for Telegram alerts every minute in market hours
+
+[Timer]
+# 25 s past each minute: after the collector (~3 s) and the PCR export (20 s) have written that minute
+OnCalendar=Mon..Fri *-*-* 09..14:*:25 Asia/Kolkata
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

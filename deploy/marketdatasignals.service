@@ -1,0 +1,10 @@
+[Unit]
+Description=MarketDataAgent - send setup BUY/SELL alerts to Telegram
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/python analysis/live_signals.py
+# It only reads the CSVs, so it never competes with the collector
+Nice=5
