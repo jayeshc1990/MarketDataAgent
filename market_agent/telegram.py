@@ -52,6 +52,14 @@ def send(text: str) -> None:
     _call(token, "sendMessage", chat_id=chat, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+def bot_username() -> str:
+    """The bot's @username; raises TelegramError if the token is wrong."""
+    token, _ = _settings()
+    if not token:
+        raise TelegramError("TELEGRAM_BOT_TOKEN missing in .env")
+    return "@" + _call(token, "getMe")["username"]
+
+
 def find_chats() -> list:
     """(chat id, name) of chats that recently messaged the bot."""
     token, _ = _settings()
@@ -69,10 +77,17 @@ def find_chats() -> list:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--find-chat", action="store_true", help="list chats that messaged the bot")
+    ap.add_argument("--chat-ids", action="store_true", help="only the chat ids, one per line (for scripts)")
+    ap.add_argument("--whoami", action="store_true", help="check the token: print the bot's @username")
     ap.add_argument("--test", action="store_true", help="send a test message")
     a = ap.parse_args()
     try:
-        if a.find_chat:
+        if a.whoami:
+            print(bot_username())
+        elif a.chat_ids:
+            for cid, _ in find_chats():
+                print(cid)
+        elif a.find_chat:
             chats = find_chats()
             if not chats:
                 print("No messages yet: send any message to the bot in Telegram, then run this again.")
