@@ -61,6 +61,20 @@ Runs today's session: logs in at 09:10, collects every minute until 15:40, does 
 | `python run_agent.py --check` | test login, quotes and candles once (OK/FAIL) |
 | `python run_agent.py --once` | one cycle right now (ignores market hours) |
 | `python run_agent.py --once --mock` | offline test with generated data, no credentials |
+| `python fetch_history.py` | download all past NIFTY spot candles Angel One has (see below) |
+
+### Past index history
+
+`fetch_history.py` downloads as much NIFTY spot history as Angel One serves, for multi-day support/resistance
+levels: daily, 15-min, 5-min and 1-min candles into `Data/NIFTY/HISTORY/NIFTY_<1day|15min|5min|1min>.csv`.
+Re-running fetches only what is missing (newer candles, then older ones until Angel One has none), and it saves
+after every request, so it can be stopped and resumed. It refuses to run in market hours (it would share the
+~10-15 candle requests/min with the live collector) unless `--force`. Expired option contracts can't be
+downloaded, because Angel One only serves live tokens.
+```bash
+.venv/bin/python fetch_history.py                         # all intervals
+.venv/bin/python fetch_history.py --intervals ONE_DAY     # only daily candles
+```
 
 ### Automatic start (Ubuntu 24.04 server)
 
