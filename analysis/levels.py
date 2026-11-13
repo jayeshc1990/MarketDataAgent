@@ -23,10 +23,20 @@ SWING_LOOKBACK = 250      # trading days of swing points used (about a year)
 ZONE_PCT = 0.25           # swing points within this % of each other form one zone
 MIN_ZONE_POINTS = 2       # a zone needs at least this many swing points (price turned there more than once)
 MAX_DIST_PCT = 5.0        # levels kept within this % of the last close
+SESSION_END = pd.Timestamp("15:15").time()   # daily high/low use candles before this (continuous trading)
+
+
+def _session_hl(df: pd.DataFrame) -> pd.DataFrame:
+    """Daily high/low of the continuous session 09:15-15:14. From 15:15 the spot shows the closing-price
+    calculation (frozen, then a jump that decays to the official close), which isn't a traded level."""
+    df = df[df.timestamp.dt.time < SESSION_END]
+    g = df.groupby(df.timestamp.dt.normalize())
+    return pd.DataFrame({"high": g.high.max(), "low": g.low.min()})
 
 
 def load_daily(index_dir) -> pd.DataFrame:
-    """Daily open/high/low/close indexed by date, for the index whose folder holds HISTORY/ and INDEX/."""
+    """Daily open/high/low/close indexed by date, for the index whose folder holds HISTORY/ and INDEX/.
+    Close = official close (used for the EMAs); high/low = continuous session where intraday data exists."""
     base = Path(index_dir)
     if base.name == "INDEX":
         base = base.parent
@@ -36,14 +46,20 @@ def load_daily(index_dir) -> pd.DataFrame:
     if hist.exists():
         h = pd.read_csv(hist, parse_dates=["timestamp"])
         h.index = h.timestamp.dt.normalize()
-        frames.append(h[["open", "high", "low", "close"]])
+        h = h[h.index.dayofweek < 5][["open", "high", "low", "close"]]
+        m5 = base / "HISTORY" / f"{name}_5min.csv"
+        if m5.exists():
+            hl = _session_hl(pd.read_csv(m5, parse_dates=["timestamp"]))
+            both = hl.index.intersection(h.index)
+            h.loc[both, ["high", "low"]] = hl.loc[both, ["high", "low"]]
+        frames.append(h)
     files = sorted((base / "INDEX").glob(f"{name}_INDEX_*_1min.csv"))
     if files:
         f = pd.concat(pd.read_csv(p, parse_dates=["timestamp"]) for p in files).drop_duplicates("timestamp")
         f = f[f.timestamp.dt.time < pd.Timestamp("15:30").time()]
         g = f.groupby(f.timestamp.dt.normalize())
-        d = g.agg(open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"))
-        frames.append(d[g.close.nunique() > 5])                    # frozen (holiday) files skipped
+        d = g.agg(open=("open", "first"), close=("close", "last")).join(_session_hl(f))
+        frames.append(d[g.close.nunique() > 5][["open", "high", "low", "close"]])   # frozen (holiday) files skipped
     if not frames:
         return pd.DataFrame(columns=["open", "high", "low", "close"])
     daily = pd.concat(frames)
