@@ -2,7 +2,9 @@
 
 Runs once a minute in market hours (deploy/setup_signals.sh installs the timer). Each run replays today's
 collected 1-min option data through the same backtest code, so the alerts follow the backtest exactly:
-  BUY     a setup signal on the minute that just closed (the backtest buys at the high of the next candle)
+  BUY     a setup signal on the minute that just closed: place a buy limit at the signal candle's close,
+          live for the next 1-min candle (the backtest fills it if that candle trades at or below it)
+  NOT FILLED  the next candle never traded at the limit: cancel the order (the backtest skips the signal)
   SELL    an alerted trade hit its exit: option stop, spot back through the level, next level, or 14:45
   SUMMARY the day's alerted trades, once after 14:50
 Sent alerts are remembered in <data_dir>/SIGNALS/<date>.json, so nothing is sent twice and a failed send
@@ -59,9 +61,9 @@ def load_day(root: Path, underlying: str, day) -> pd.DataFrame:
 
 
 def evaluate(raw: pd.DataFrame, index_dir: Path):
-    """(trades, pending signals) from replaying `raw` through the backtest."""
-    pending = []
-    return B.run_setups(raw, index_dir, pending=pending), pending
+    """(trades, pending signals, unfilled signals) from replaying `raw` through the backtest."""
+    pending, missed = [], []
+    return B.run_setups(raw, index_dir, pending=pending, missed=missed), pending, missed
 
 
 # ---------------------------------------------------------------- messages
@@ -80,10 +82,12 @@ def buy_message(setup, symbol, signal, detail, side, spot=None, spot_stop=None, 
     lines = [f"🟢 <b>BUY {html.escape(contract(symbol))}</b>",
              f"{SETUP_LABEL.get(setup, setup)} · {html.escape(detail)}"]
     if entry_px is None:
+        nxt = pd.Timestamp(signal) + pd.Timedelta("1min")
         lines += [f"Signal candle {signal:%H:%M}: option {_num(signal_close, '.2f')} · spot {_num(spot)}",
-                  "Entry: buy on the next 1-min candle (backtest fills at its high)"]
+                  f"Entry: <b>buy limit {_num(signal_close, '.2f')}</b> during the {nxt:%H:%M} candle; "
+                  "cancel if not filled by its end"]
     else:   # the alert comes late: the entry candle has already closed
-        lines.append(f"Signal {signal:%H:%M} · backtest entry {entry:%H:%M} @ {entry_px:.2f}")
+        lines.append(f"Signal {signal:%H:%M} · limit filled {entry:%H:%M} @ {entry_px:.2f}")
     has_target = spot_target is not None and pd.notna(spot_target)
     k = 1 if side == "CE" else -1
     if setup in NEAR_EXIT_SETUPS and has_target:
@@ -96,6 +100,12 @@ def buy_message(setup, symbol, signal, detail, side, spot=None, spot_stop=None, 
              "option 30 below entry", "14:45"]
     lines += ["Exit if: " + " · ".join(x for x in exits if x), FOOTER]
     return "\n".join(lines)
+
+
+def unfilled_message(setup, symbol, signal, limit) -> str:
+    return "\n".join([f"⚪ <b>NOT FILLED {html.escape(contract(symbol))}</b> — cancel the buy order",
+                      f"{SETUP_LABEL.get(setup, setup)} · signal {pd.Timestamp(signal):%H:%M}: the next candle never "
+                      f"traded at the limit {limit:.2f}, so this signal is skipped"])
 
 
 def sell_message(t) -> str:
@@ -127,7 +137,7 @@ def state_path(root: Path, day) -> Path:
 def load_state(path: Path) -> dict:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    return {"buy": {}, "sell": {}, "skipped": {}, "summary": False}
+    return {"buy": {}, "sell": {}, "skipped": {}, "unfilled": {}, "summary": False}
 
 
 def save_state(path: Path, state: dict):
@@ -141,10 +151,16 @@ def _key(setup, signal, symbol) -> str:
     return f"{setup}|{pd.Timestamp(signal):%Y-%m-%d %H:%M}|{symbol}"
 
 
-def process(trades: pd.DataFrame, pending: list, state: dict, now: pd.Timestamp, send, cfg) -> dict:
+def process(trades: pd.DataFrame, pending: list, state: dict, now: pd.Timestamp, send, cfg, missed=()) -> dict:
     """Sends the alerts that are due and records them in `state`. `send(text)` raises on failure, and then
-    the alert stays unrecorded so the next run tries again."""
+    the alert stays unrecorded so the next run tries again. `missed`: signals whose limit buy wasn't filled."""
     setups, stale = cfg["setups"], cfg["stale"]
+    state.setdefault("unfilled", {})
+    for x in missed:                     # a BUY went out but the limit never filled: tell the user to cancel
+        k = _key(x["setup"], x["signal"], x["symbol"])
+        if x["setup"] in setups and k in state["buy"] and k not in state["unfilled"]:
+            send(unfilled_message(x["setup"], x["symbol"], x["signal"], x["limit"]))
+            state["unfilled"][k] = str(now)
     for p in pending:
         k = _key(p["setup"], p["signal"], p["symbol"])
         if p["setup"] not in setups or k in state["buy"] or k in state["skipped"]:
@@ -185,7 +201,7 @@ def run_once(dry_run: bool):
         return
     if not dry_run and not telegram.configured():
         sys.exit("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env (see market_agent/telegram.py)")
-    trades, pending = evaluate(raw, root / cfg["underlying"] / "INDEX")
+    trades, pending, missed = evaluate(raw, root / cfg["underlying"] / "INDEX")
     path = state_path(root, now.date())
     state = load_state(path)
     sent = []
@@ -197,7 +213,7 @@ def run_once(dry_run: bool):
         sent.append(text)
 
     try:
-        process(trades, pending, state, now, send, cfg)
+        process(trades, pending, state, now, send, cfg, missed)
     finally:
         if not dry_run:
             save_state(path, state)       # whatever was sent before a failure is never sent again
@@ -212,17 +228,17 @@ def replay(day: str):
     if raw.empty:
         sys.exit(f"no data for {day}")
     index_dir = root / cfg["underlying"] / "INDEX"
-    state = {"buy": {}, "sell": {}, "skipped": {}, "summary": False}
+    state = {"buy": {}, "sell": {}, "skipped": {}, "unfilled": {}, "summary": False}
     for t in sorted(raw.timestamp.unique()):
         now = pd.Timestamp(t) + pd.Timedelta("1min 25s")     # timer runs 25 s after the minute's row is written
         if now - now.normalize() > pd.Timedelta("15:00:00"):
             break
-        trades, pending = evaluate(raw[raw.timestamp <= t], index_dir)
+        trades, pending, missed = evaluate(raw[raw.timestamp <= t], index_dir)
 
         def send(text, now=now):
             print(f"--- {now:%H:%M:%S}\n{text}\n")
 
-        process(trades, pending, state, now, send, cfg)
+        process(trades, pending, state, now, send, cfg, missed)
     final = B.run_setups(raw, index_dir)
     final = final[final.setup.isin(cfg["setups"])]
     print("=== backtest on the full day:")

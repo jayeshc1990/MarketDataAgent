@@ -26,7 +26,8 @@ Setup 5 - support/resistance + day trend + PCR (own rules, see run_sr):
            breakout (closes 5+ above a resistance it was below) -> CE; rejection / breakdown -> PE.
   Filter : spot on the trade's side of the day's open, PCR since the open moved the trade's way, and at
            least 40 pts of room to the next level. Never on the expiry day of the traded expiry.
-  Trade  : ITM option (delta 0.55-0.75, closest to 0.62), bought at the high of the next 1-min candle.
+  Trade  : ITM option (delta 0.55-0.75, closest to 0.62). Buy limit at the signal candle's close, live on
+           the next 1-min candle only: filled if that candle trades at or below it, else the signal is skipped.
            Exit when spot goes 15 pts back through the level, spot reaches the next level, the option
            falls 30, or 14:45. One position at a time, max 3 trades a day.
 
@@ -311,11 +312,12 @@ def _spot_hl(index_dir) -> pd.DataFrame:
 
 
 def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None, daily=None,
-           near=False) -> pd.DataFrame:
+           near=False, missed=None) -> pd.DataFrame:
     """Setup 5 trades on prepared 1-min option data (see the module docstring). `min_pcr` and `max_dist`
     are setup 6's extra filters; `daily` (daily candles from levels.load_daily) adds setup 7's multi-day
     levels; `near` is setups 6-7's near-target exit (see _sr_exit). If `pending` is a list, a signal on the
-    data's last minute (its entry candle not formed yet) is appended to it - used by the live Telegram alerts."""
+    data's last minute (its entry candle not formed yet) is appended to it - used by the live Telegram alerts.
+    `missed` (a list) collects signals whose limit buy wasn't filled on the next candle."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
@@ -361,7 +363,12 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
                                 spot_target=nxt, detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
         if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
             continue
-        entry_px = g.high.iat[e]
+        entry_px = g.close.iat[e - 1]          # buy limit at the signal candle's close, live on the next candle
+        if g.low.iat[e] > entry_px:            # that candle never traded at the limit: not filled, signal skipped
+            if missed is not None:
+                missed.append(dict(day=r.day.date(), signal=r.ts, symbol=c.symbol, side=r.side, limit=entry_px,
+                                   detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
+            continue
         exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt, near)
         free_at = g.timestamp.iat[j]; count[r.day] = count.get(r.day, 0) + 1
         pnl = exit_px - entry_px
@@ -383,10 +390,11 @@ def select_chain(raw: pd.DataFrame, min_dte: int) -> pd.DataFrame:
     return raw[ok & (exp == day.map(pick))]
 
 
-def run_setups(raw: pd.DataFrame, index_dir=None, pending=None) -> pd.DataFrame:
+def run_setups(raw: pd.DataFrame, index_dir=None, pending=None, missed=None) -> pd.DataFrame:
     """All trades of all setups, one row per trade with a `setup` column. `index_dir` (the INDEX folder)
     gives setups 5-6 the previous day's high/low/close; without it they come from the data's own spot.
-    `pending` (a list) collects setup 5/6 signals on the last minute whose entry candle isn't there yet."""
+    `pending` (a list) collects setup 5-7 signals on the last minute whose entry candle isn't there yet;
+    `missed` (a list) collects signals whose limit buy wasn't filled."""
     missing = [c for c in NEEDED if c not in raw]
     if missing:
         raise ValueError(f"missing columns: {', '.join(missing)}")
@@ -394,20 +402,22 @@ def run_setups(raw: pd.DataFrame, index_dir=None, pending=None) -> pd.DataFrame:
     active = {n: cfg for n, cfg in SETUPS.items() if n in ALL_SETUPS}
     sig = signals(d) if active else None
     out = [backtest(d, sig, **cfg).assign(setup=name) for name, cfg in active.items()]
-    p5, p6 = [], []
-    out.append(run_sr(d, index_dir, pending=p5).assign(setup=SR_SETUP))
+    p5, p6, p7, m5, m6, m7 = [], [], [], [], [], []
+    out.append(run_sr(d, index_dir, pending=p5, missed=m5).assign(setup=SR_SETUP))
     d6 = select_chain(raw, SR6_MIN_DTE)
-    p7 = []
     if not d6.empty:
         d6 = prepare(d6)
-        out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6, near=True).assign(setup=SR6_SETUP))
+        out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6, near=True, missed=m6)
+                   .assign(setup=SR6_SETUP))
         daily = LV.load_daily(index_dir) if index_dir and Path(index_dir).exists() else None
         if SR7_SETUP in ALL_SETUPS and daily is not None and len(daily):
-            out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p7, daily=daily, near=True)
-                       .assign(setup=SR7_SETUP))
+            out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p7, daily=daily, near=True,
+                              missed=m7).assign(setup=SR7_SETUP))
+    tag = lambda rows, s: [dict(x, setup=s) for x in rows]
     if pending is not None:
-        pending += ([dict(x, setup=SR_SETUP) for x in p5] + [dict(x, setup=SR6_SETUP) for x in p6]
-                    + [dict(x, setup=SR7_SETUP) for x in p7])
+        pending += tag(p5, SR_SETUP) + tag(p6, SR6_SETUP) + tag(p7, SR7_SETUP)
+    if missed is not None:
+        missed += tag(m5, SR_SETUP) + tag(m6, SR6_SETUP) + tag(m7, SR7_SETUP)
     out = [t for t in out if len(t)]
     cols = ["setup", "day", "signal", "entry", "exit", "symbol", "side", "entry_px", "exit_px", "pnl", "net", "mins",
             "exit_reason", "detail"]

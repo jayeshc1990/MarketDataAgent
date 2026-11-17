@@ -191,7 +191,8 @@ so that next week's contracts exist on those days. Setup 7 is setup 6 plus the m
 as soon as spot's 1-min high/low comes within 5 pts of it, and once spot has been within 20 pts of the target
 they exit if it falls 10 pts from its best (`SR_NEAR_TARGET`, `SR_NEAR_ZONE`, `SR_NEAR_TRAIL`). In the tab, each chosen day uses
 its own collected expiries.
-A trade is bought on the candle after the signal candle, at that candle's high (worst fill).
+Setups 5–7 buy with a limit at the signal candle's close, live on the next 1-min candle: filled if that candle
+trades at or below it, otherwise the signal is skipped (Telegram then sends "NOT FILLED — cancel the order").
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. The journal view
 hides the days each setup's rules were found on (28–30 Oct 2026 for 1–4, up to 11 Nov 2026 for 5–6). The same can be
 run by hand on combined option CSVs (Data explorer export format):

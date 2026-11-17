@@ -601,7 +601,8 @@ with tabs[8]:
             "call / high side. On each 5-min spot candle (09:30–14:25) a **bounce** off support or a **breakout** "
             "above resistance → CE, a **rejection** or **breakdown** → PE, taken only if spot is on the trade's side "
             "of the day's open, PCR since the open moved the trade's way and there are ≥ 40 pts to the next level. "
-            "ITM option (delta ≈ 0.62), bought at the next 1-min candle's high. Exit when spot goes 15 pts back "
+            "ITM option (delta ≈ 0.62), **buy limit at the signal candle's close**, live on the next 1-min candle "
+            "(filled if it trades at or below that price, else the signal is skipped). Exit when spot goes 15 pts back "
             "through the level, reaches the next level, the option falls 30, or at 14:45. One position at a time, "
             "max 3 a day, **never on the expiry day** of the traded expiry. The **detail** column names the event.\n\n"
             "**Setup 6:** same as 5, plus PCR since the open moved **≥ 0.05** the "
@@ -617,7 +618,7 @@ with tabs[8]:
             "next level for the room filter and the target. Needs daily history (`fetch_history.py`); the levels "
             "for a day are listed under *Multi-day levels* below.\n\n"
             "- Times are 1-min candle start times. **signal** = candle whose close met the rules, **entry** = the "
-            "next candle (bought at its high), **exit** = candle where the exit rule hit.\n"
+            "next candle (limit filled at the signal candle's close), **exit** = candle where the exit rule hit.\n"
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
             f"- Rules were found on data up to {BT.SR_FOUND_UNTIL:%d %b}; judge the setups on later days only.")
 
