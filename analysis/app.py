@@ -515,10 +515,9 @@ with tabs[7]:
                        disabled=result.empty)
 
 # ---------------------------------------------------------------- backtest (frozen setups)
-_LABELS = {"1_no_limits": "1 · No limits", "2_cooldown10": "2 · 10-min cooldown",
-           "3_cooldown10_max5": "3 · Cooldown + max 5/day", "4_cooldown10_max3": "4 · Cooldown + max 3/day",
-           BT.SR_SETUP: "5 · S/R + trend + PCR", BT.SR6_SETUP: "6 · S/R filtered, next expiry Mon/Tue",
-           BT.SR7_SETUP: "7 · 6 + daily EMAs & multi-day levels"}
+# plain names only: what each setup does is described under "Rules", not in its name
+_LABELS = {"1_no_limits": "Setup 1", "2_cooldown10": "Setup 2", "3_cooldown10_max5": "Setup 3",
+           "4_cooldown10_max3": "Setup 4", BT.SR_SETUP: "Setup 5", BT.SR6_SETUP: "Setup 6", BT.SR7_SETUP: "Setup 7"}
 SETUP_COLORS = dict(zip(_LABELS, ["#264653", "#2a9d8f", "#e9c46a", "#e76f51", "#6a4c93", "#8ab17d", "#d62828"]))
 SETUP_LABELS = {k: v for k, v in _LABELS.items() if k in BT.ALL_SETUPS}     # only the setups that run
 
@@ -596,7 +595,7 @@ with tabs[8]:
             "**Setups 1–4** (1-min momentum + writer flow) are **switched off**: they lost money on every day after "
             "30 Oct. Older journal rows of theirs are ignored.\n\n"
             "**Net** = points after 2 pts cost per trade (brokerage, STT, fees, GST, stamp, slippage).\n\n"
-            "**Setup 5 · support/resistance + trend + PCR** (its own rules): support = biggest put-OI strike below "
+            "**Setup 5:** support = biggest put-OI strike below "
             "spot, previous day's low and close, first 15-min low, day's low so far; resistance = the same on the "
             "call / high side. On each 5-min spot candle (09:30–14:25) a **bounce** off support or a **breakout** "
             "above resistance → CE, a **rejection** or **breakdown** → PE, taken only if spot is on the trade's side "
@@ -604,11 +603,11 @@ with tabs[8]:
             "ITM option (delta ≈ 0.62), bought at the next 1-min candle's high. Exit when spot goes 15 pts back "
             "through the level, reaches the next level, the option falls 30, or at 14:45. One position at a time, "
             "max 3 a day, **never on the expiry day** of the traded expiry. The **detail** column names the event.\n\n"
-            "**Setup 6 · setup 5 with fewer losers:** same as 5, plus PCR since the open moved **≥ 0.05** the "
+            "**Setup 6:** same as 5, plus PCR since the open moved **≥ 0.05** the "
             "trade's way, spot within **30 pts** of the level at the signal, and only expiries **≥ 2 days away** — "
             "so on **Monday and Tuesday it trades next week's expiry** (levels and PCR then come from that chain). "
             "Days without a collected next expiry are skipped.\n\n"
-            "**Setup 7 · setup 6 + multi-day levels:** same as 6, with extra levels each tested as support and as "
+            "**Setup 7:** same as 6, with extra levels each tested as support and as "
             "resistance: **daily EMAs 9 / 21 / 50 / 100 / 200**, previous **week's and month's high/low**, and "
             "**swing zones** (daily swing highs/lows of the last year, merged within 0.25%). They also count as the "
             "next level for the room filter and the target. Needs daily history (`fetch_history.py`); the levels "
