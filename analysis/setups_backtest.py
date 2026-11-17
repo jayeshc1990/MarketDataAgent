@@ -35,6 +35,8 @@ Setup 6 - setup 5 with fewer losers:
   of the level at the signal, and the traded expiry is at least 2 days away. So on Monday and Tuesday of
   an expiry week (Tuesday expiry) it trades next week's expiry, and levels / PCR come from that chain.
   Needs the next expiry collected (config: options.NIFTY.expiries: 2); without it those days are skipped.
+  Exit (from 2026-11-17): the target counts as hit when spot's 1-min high (CE) / low (PE) comes within 5 pts
+  of it; once spot has been within 20 pts of the target, exit if it falls 10 pts from its best since entry.
 
 Setup 7 - setup 6 + multi-day levels (analysis/levels.py):
   Same as setup 6, with more levels, each tested as support and as resistance: daily EMAs 9/21/50/100/200,
@@ -79,6 +81,9 @@ SR7_SETUP = "7_sr_daily_levels"
 ALL_SETUPS = [SR_SETUP, SR6_SETUP, SR7_SETUP]
 SR_FOUND_UNTIL = pd.Timestamp("2026-11-11").date()     # setups 5-7 were found on data up to this day
 SR6_MIN_DTE, SR6_MIN_PCR, SR6_MAX_DIST = 2, 0.05, 30
+# setups 6-7 exit (2026-11-17): target hit when spot's 1-min high/low comes within SR_NEAR_TARGET pts of it;
+# once spot is within SR_NEAR_ZONE pts of the target, exit if it falls SR_NEAR_TRAIL pts from its best
+SR_NEAR_TARGET, SR_NEAR_ZONE, SR_NEAR_TRAIL = 5, 20, 10
 NEEDED = ["timestamp", "symbol", "strike", "type", "high", "low", "close", "oi", "delta", "underlying_spot"]
 
 
@@ -266,8 +271,13 @@ def _next_level(side, m, extra=()):
     return max(c) if c else np.nan
 
 
-def _sr_exit(g, e, c0, k, spot_stop, spot_target):
+def _sr_exit(g, e, c0, k, spot_stop, spot_target, near=False):
+    """Setup 5 exit. With `near` (setups 6-7): the target counts as hit when spot's 1-min high (CE) / low (PE)
+    comes within SR_NEAR_TARGET of it, and once spot has been within SR_NEAR_ZONE of the target, the spot
+    stop trails SR_NEAR_TRAIL behind spot's best since entry."""
     stop = c0 - SR_OPT_STOP
+    peak = g.underlying_spot.iat[e]
+    in_zone = False
     for j in range(e + 1, len(g)):
         if g.tod.iat[j] >= FORCED_EXIT:
             return g.close.iat[j - 1], j - 1, "forced_14:45"
@@ -275,17 +285,37 @@ def _sr_exit(g, e, c0, k, spot_stop, spot_target):
             return stop, j, "option_stop"
         s = g.underlying_spot.iat[j]
         if k * (s - spot_stop) < 0:
-            return g.close.iat[j], j, "spot_back_through_level"
-        if pd.notna(spot_target) and k * (s - spot_target) >= 0:
+            return g.close.iat[j], j, "trail_near_target" if in_zone else "spot_back_through_level"
+        if not near:
+            if pd.notna(spot_target) and k * (s - spot_target) >= 0:
+                return g.close.iat[j], j, "spot_at_next_level"
+            continue
+        best = g.s_hi.iat[j] if k == 1 else g.s_lo.iat[j]
+        if pd.notna(spot_target) and k * (spot_target - best) <= SR_NEAR_TARGET:
             return g.close.iat[j], j, "spot_at_next_level"
+        peak = s if k * (s - peak) > 0 else peak
+        if pd.notna(spot_target) and k * (spot_target - best) <= SR_NEAR_ZONE:
+            in_zone = True
+        if in_zone and k * (peak - k * SR_NEAR_TRAIL - spot_stop) > 0:
+            spot_stop = peak - k * SR_NEAR_TRAIL
     return g.close.iat[-1], len(g) - 1, "data_end_open"
 
 
-def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None, daily=None) -> pd.DataFrame:
+def _spot_hl(index_dir) -> pd.DataFrame:
+    """Spot 1-min high/low from the collector's INDEX files (empty if there are none)."""
+    files = sorted(Path(index_dir).glob("*_INDEX_*_1min.csv")) if index_dir and Path(index_dir).exists() else []
+    if not files:
+        return pd.DataFrame(columns=["high", "low"])
+    f = pd.concat(pd.read_csv(p, usecols=["timestamp", "high", "low"], parse_dates=["timestamp"]) for p in files)
+    return f.drop_duplicates("timestamp").set_index("timestamp")
+
+
+def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=None, daily=None,
+           near=False) -> pd.DataFrame:
     """Setup 5 trades on prepared 1-min option data (see the module docstring). `min_pcr` and `max_dist`
     are setup 6's extra filters; `daily` (daily candles from levels.load_daily) adds setup 7's multi-day
-    levels. If `pending` is a list, a signal on the data's last minute (its entry candle not formed yet) is
-    appended to it - used by the live Telegram alerts."""
+    levels; `near` is setups 6-7's near-target exit (see _sr_exit). If `pending` is a list, a signal on the
+    data's last minute (its entry candle not formed yet) is appended to it - used by the live Telegram alerts."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
@@ -297,7 +327,14 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
             lv = LV.levels_for(daily, day)
             extra[day] = list(zip(lv.name, lv.level))
     E = sr_events(M, extra)
-    px = {k: g.reset_index(drop=True) for k, g in d.groupby(["day", "symbol"])}
+    hl = _spot_hl(index_dir) if near else None
+    px = {}
+    for key, g in d.groupby(["day", "symbol"]):
+        g = g.reset_index(drop=True)
+        if near:     # spot's 1-min high/low (from the INDEX files), else its close
+            g["s_hi"] = g.timestamp.map(hl.high).fillna(g.underlying_spot).values if len(hl) else g.underlying_spot
+            g["s_lo"] = g.timestamp.map(hl.low).fillna(g.underlying_spot).values if len(hl) else g.underlying_spot
+        px[key] = g
     lo, hi, tgt = SR_DELTA
     trades, free_at, count = [], pd.Timestamp.min, {}
     for _, r in E.iterrows():
@@ -325,7 +362,7 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
         if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
             continue
         entry_px = g.high.iat[e]
-        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt)
+        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt, near)
         free_at = g.timestamp.iat[j]; count[r.day] = count.get(r.day, 0) + 1
         pnl = exit_px - entry_px
         trades.append(dict(day=r.day.date(), signal=r.ts, entry=g.timestamp.iat[e], exit=g.timestamp.iat[j],
@@ -363,10 +400,10 @@ def run_setups(raw: pd.DataFrame, index_dir=None, pending=None) -> pd.DataFrame:
     p7 = []
     if not d6.empty:
         d6 = prepare(d6)
-        out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6).assign(setup=SR6_SETUP))
+        out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p6, near=True).assign(setup=SR6_SETUP))
         daily = LV.load_daily(index_dir) if index_dir and Path(index_dir).exists() else None
         if SR7_SETUP in ALL_SETUPS and daily is not None and len(daily):
-            out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p7, daily=daily)
+            out.append(run_sr(d6, index_dir, SR6_MIN_PCR, SR6_MAX_DIST, pending=p7, daily=daily, near=True)
                        .assign(setup=SR7_SETUP))
     if pending is not None:
         pending += ([dict(x, setup=SR_SETUP) for x in p5] + [dict(x, setup=SR6_SETUP) for x in p6]

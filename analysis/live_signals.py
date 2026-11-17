@@ -33,7 +33,9 @@ SUMMARY_AT = pd.Timedelta("14:50:00")
 SYMBOL_RE = re.compile(r"^(?P<name>[A-Z]+)(?P<dd>\d{2})(?P<mon>[A-Z]{3})(?P<yy>\d{2})(?P<strike>\d+)(?P<type>CE|PE)$")
 SETUP_LABEL = {B.SR_SETUP: "Setup 5", B.SR6_SETUP: "Setup 6", B.SR7_SETUP: "Setup 7"}
 EXIT_LABEL = {"option_stop": "option stop (-30)", "spot_back_through_level": "spot back through the level",
-              "spot_at_next_level": "spot reached the next level", "forced_14:45": "14:45 square-off"}
+              "spot_at_next_level": "spot reached the next level", "forced_14:45": "14:45 square-off",
+              "trail_near_target": "spot turned back near the target"}
+NEAR_EXIT_SETUPS = {B.SR6_SETUP, B.SR7_SETUP}       # setups with the near-target exit (setups_backtest._sr_exit)
 FOOTER = "<i>Forward-test signal from your own rules, not investment advice.</i>"
 
 
@@ -82,8 +84,15 @@ def buy_message(setup, symbol, signal, detail, side, spot=None, spot_stop=None, 
                   "Entry: buy on the next 1-min candle (backtest fills at its high)"]
     else:   # the alert comes late: the entry candle has already closed
         lines.append(f"Signal {signal:%H:%M} · backtest entry {entry:%H:%M} @ {entry_px:.2f}")
-    exits = [f"spot {below} {_num(spot_stop)}" if spot_stop is not None else None,
-             f"spot reaches {_num(spot_target)}" if spot_target is not None and pd.notna(spot_target) else None,
+    has_target = spot_target is not None and pd.notna(spot_target)
+    k = 1 if side == "CE" else -1
+    if setup in NEAR_EXIT_SETUPS and has_target:
+        target = (f"spot touches {_num(spot_target - k * B.SR_NEAR_TARGET)} (target {_num(spot_target)}) · "
+                  f"after spot gets within {B.SR_NEAR_ZONE:.0f} of target, if it falls {B.SR_NEAR_TRAIL:.0f} "
+                  "from its best")
+    else:
+        target = f"spot reaches {_num(spot_target)}" if has_target else None
+    exits = [f"spot {below} {_num(spot_stop)}" if spot_stop is not None else None, target,
              "option 30 below entry", "14:45"]
     lines += ["Exit if: " + " · ".join(x for x in exits if x), FOOTER]
     return "\n".join(lines)

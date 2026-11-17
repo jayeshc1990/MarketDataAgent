@@ -187,7 +187,9 @@ code kept) and setup 5 (support/resistance + day trend + PCR since the open,
 setup 6 (setup 5 + PCR since open ≥ 0.05 + entry within 30 pts of the level, trading only expiries at least 2 days
 away, so next week's expiry on Monday and Tuesday). The collector keeps two expiries (`options.NIFTY.expiries: 2`)
 so that next week's contracts exist on those days. Setup 7 is setup 6 plus the multi-day levels from
-`analysis/levels.py` (daily EMAs, previous week/month high/low, swing zones). In the tab, each chosen day uses
+`analysis/levels.py` (daily EMAs, previous week/month high/low, swing zones). Setups 6–7 exit at the target
+as soon as spot's 1-min high/low comes within 5 pts of it, and once spot has been within 20 pts of the target
+they exit if it falls 10 pts from its best (`SR_NEAR_TARGET`, `SR_NEAR_ZONE`, `SR_NEAR_TRAIL`). In the tab, each chosen day uses
 its own collected expiries.
 A trade is bought on the candle after the signal candle, at that candle's high (worst fill).
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. The journal view
