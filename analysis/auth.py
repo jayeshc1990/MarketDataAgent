@@ -130,28 +130,30 @@ def require_login():
 
     ip = st.context.ip_address
     ip = ip if isinstance(ip, str) and ip else "local"      # None when browsing from the server itself
-    # the page is public, so it shows a neutral name, not what is behind it
-    st.title(PUBLIC_NAME)
-    st.caption("Sign in to continue")
-    wait = _locked_for(ip)
-    if wait:
-        st.error(f"Too many failed attempts. Try again in {int(wait // 60) + 1} min.")
-        st.stop()
-    with st.form("login"):
-        user = st.text_input("Username", autocomplete="username")
-        pw1 = st.text_input("Password 1", type="password")
-        pw2 = st.text_input("Password 2", type="password")
-        submitted = st.form_submit_button("Log in")
-    if submitted:
-        # check everything every time, so the response doesn't reveal which part was wrong
-        ok = [hmac.compare_digest(user.strip().encode(), creds[0].encode()),
-              verify_password(pw1, creds[1]), verify_password(pw2, creds[2])]
-        _record(ip, all(ok))
-        if all(ok):
-            st.session_state["auth_user"] = creds[0]
-            st.session_state["new_login"] = True       # write the cookie on the next run
-            st.session_state.pop("logged_out", None)
-            st.rerun()
-        time.sleep(FAIL_DELAY)
-        st.error("Wrong username or passwords.")
+    # the page is public, so it shows a neutral name, not what is behind it; the form sits in the middle
+    # third of the (wide) page
+    with st.columns([1, 1.2, 1])[1]:
+        st.title(PUBLIC_NAME)
+        st.caption("Sign in to continue")
+        wait = _locked_for(ip)
+        if wait:
+            st.error(f"Too many failed attempts. Try again in {int(wait // 60) + 1} min.")
+            st.stop()
+        with st.form("login"):
+            user = st.text_input("Username", autocomplete="username")
+            pw1 = st.text_input("Password 1", type="password")
+            pw2 = st.text_input("Password 2", type="password")
+            submitted = st.form_submit_button("Log in")
+        if submitted:
+            # check everything every time, so the response doesn't reveal which part was wrong
+            ok = [hmac.compare_digest(user.strip().encode(), creds[0].encode()),
+                  verify_password(pw1, creds[1]), verify_password(pw2, creds[2])]
+            _record(ip, all(ok))
+            if all(ok):
+                st.session_state["auth_user"] = creds[0]
+                st.session_state["new_login"] = True       # write the cookie on the next run
+                st.session_state.pop("logged_out", None)
+                st.rerun()
+            time.sleep(FAIL_DELAY)
+            st.error("Wrong username or passwords.")
     st.stop()

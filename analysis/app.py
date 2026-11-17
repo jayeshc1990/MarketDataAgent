@@ -18,7 +18,8 @@ from analysis import auth  # noqa: E402
 from analysis import data as D  # noqa: E402
 from analysis import setups_backtest as BT  # noqa: E402
 
-st.set_page_config(page_title=auth.PUBLIC_NAME, layout="centered")    # neutral name until logged in
+# wide from the first call: Streamlit keeps the first layout, so a later "wide" would not apply
+st.set_page_config(page_title=auth.PUBLIC_NAME, layout="wide")    # neutral name until logged in
 auth.require_login()     # nothing below runs (no data is read) until the user has logged in
 st.set_page_config(page_title="NIFTY Options Analysis", layout="wide")
 
