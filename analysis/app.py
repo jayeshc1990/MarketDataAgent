@@ -27,6 +27,9 @@ CE_COLOR, PE_COLOR, SPOT_COLOR = "#2a9d8f", "#e76f51", "#264653"
 BUILDUP_COLORS = {"Long build-up": "#2a9d8f", "Short covering": "#8ecae6",
                   "Short build-up": "#e76f51", "Long unwinding": "#f4a261"}
 REFRESH_SECONDS = 30   # how often the page checks the CSVs for new bars
+# auto-refresh is on by default only in these hours (IST, weekdays); the close leaves time for the
+# collector's 15:40 backfill to show up
+MARKET_OPEN, MARKET_CLOSE = pd.Timedelta("09:15:00"), pd.Timedelta("15:45:00")
 DEFAULT_INDEX = "NIFTY"   # index selected when the page opens (if it has data)
 # hide nights and weekends on time axes
 RANGEBREAKS = [dict(bounds=["sat", "mon"]), dict(bounds=[15.5, 9.25], pattern="hour")]
@@ -71,16 +74,30 @@ sig = D.files_signature(*watched)
 st.session_state["data_sig"] = sig
 opts_all, idx_all = load(str(root), underlying, expiry, tf, sig)
 
-auto = st.sidebar.toggle("Auto-refresh when new data arrives", value=True)
+def _market_open() -> bool:
+    """Weekday, MARKET_OPEN..MARKET_CLOSE IST: when the collector writes new bars."""
+    now = pd.Timestamp.now(tz="Asia/Kolkata")
+    return now.weekday() < 5 and MARKET_OPEN <= now - now.normalize() <= MARKET_CLOSE
+
+
+# on by default only in market hours; its default changing at the open / close resets the toggle to it
+mkt_open = _market_open()
+st.session_state["mkt_open"] = mkt_open
+auto = st.sidebar.toggle("Auto-refresh when new data arrives", value=mkt_open,
+                         help="On by default in market hours (09:15-15:45 IST), off after the close.")
 
 
 @st.fragment(run_every=REFRESH_SECONDS if auto else None)
 def _watch_files():
-    """Checks the CSVs every REFRESH_SECONDS and reruns the page when the collector has written new bars."""
+    """Checks the CSVs every REFRESH_SECONDS and reruns the page when the collector has written new bars.
+    At the market open / close it reruns once, so the toggle's default (on / off) follows."""
+    if _market_open() != st.session_state.get("mkt_open"):
+        st.rerun(scope="app")
     if D.files_signature(*watched) != st.session_state.get("data_sig"):
         st.rerun(scope="app")
     st.caption(f"Data as of {pd.Timestamp.now(tz='Asia/Kolkata'):%H:%M:%S} IST"
-               + (f" · checking every {REFRESH_SECONDS}s" if auto else " · auto-refresh off"))
+               + (f" · checking every {REFRESH_SECONDS}s" if auto
+                  else " · auto-refresh off" + ("" if mkt_open else " (market closed)")))
 
 
 with st.sidebar:
@@ -622,91 +639,97 @@ with tabs[8]:
             "- **data_end_open** means the data ended while the trade was still open (its P&L isn't final).\n"
             f"- Rules were found on data up to {BT.SR_FOUND_UNTIL:%d %b}; judge the setups on later days only.")
 
-    with st.expander("Multi-day levels (setup 7)"):
-        daily = _daily(str(root / underlying), D.files_signature(root / underlying / "HISTORY", root / underlying / "INDEX"))
-        if daily.empty:
-            st.info("No daily history yet: run `fetch_history.py` on the server.")
-        else:
-            lv_day = st.date_input("Levels for", pd.Timestamp.now(tz="Asia/Kolkata").date(), key="lv_day")
-            lv = BT.LV.levels_for(daily, lv_day)
-            last = daily[daily.index < pd.Timestamp(lv_day)].close
-            if lv.empty or last.empty:
-                st.info("No levels for that day.")
+    # A fragment: picking days, running the backtest or using the journal reruns only this panel,
+    # not the whole dashboard (all tabs and their charts), which made every click slow.
+    @st.fragment
+    def _backtest_panel():
+        with st.expander("Multi-day levels (setup 7)"):
+            daily = _daily(str(root / underlying), D.files_signature(root / underlying / "HISTORY", root / underlying / "INDEX"))
+            if daily.empty:
+                st.info("No daily history yet: run `fetch_history.py` on the server.")
             else:
-                lv["vs_last_close"] = lv.level - last.iloc[-1]
-                st.caption(f"From {len(daily[daily.index < pd.Timestamp(lv_day)])} daily candles "
-                           f"({daily.index[0]:%d %b %Y} – {last.index[-1]:%d %b %Y}); last close {last.iloc[-1]:,.2f}. "
-                           "Within 5% of it, lowest first.")
-                st.dataframe(lv, hide_index=True, width="stretch",
-                             column_config={"level": st.column_config.NumberColumn(format="%.2f"),
-                                            "vs_last_close": st.column_config.NumberColumn("vs last close",
-                                                                                           format="%+.0f")})
+                lv_day = st.date_input("Levels for", pd.Timestamp.now(tz="Asia/Kolkata").date(), key="lv_day")
+                lv = BT.LV.levels_for(daily, lv_day)
+                last = daily[daily.index < pd.Timestamp(lv_day)].close
+                if lv.empty or last.empty:
+                    st.info("No levels for that day.")
+                else:
+                    lv["vs_last_close"] = lv.level - last.iloc[-1]
+                    st.caption(f"From {len(daily[daily.index < pd.Timestamp(lv_day)])} daily candles "
+                               f"({daily.index[0]:%d %b %Y} – {last.index[-1]:%d %b %Y}); last close {last.iloc[-1]:,.2f}. "
+                               "Within 5% of it, lowest first.")
+                    st.dataframe(lv, hide_index=True, width="stretch",
+                                 column_config={"level": st.column_config.NumberColumn(format="%.2f"),
+                                                "vs_last_close": st.column_config.NumberColumn("vs last close",
+                                                                                               format="%+.0f")})
 
-    src = st.radio("Data", ["Collected data", "Upload CSV files"], horizontal=True, key="bt_src")
-    raw, bt_days = pd.DataFrame(), []
-    if src.startswith("Collected"):
-        trading_days = sorted({pd.Timestamp(p.name.split("_")[-2]).date()
-                               for p in (root / underlying / "INDEX").glob(f"{underlying}_INDEX_*_1min.csv")}
-                              | set(days), reverse=True)
-        bt_days = st.multiselect("Days to test", trading_days, default=[d for d in sel_days if d in trading_days],
-                                 key=f"bt_days_{underlying}", format_func=lambda d: d.strftime("%a %d %b"))
-        st.caption("Each day uses its collected expiries at 1-min, all strikes (the sidebar expiry, strike range and "
-                   "candle don't matter here): setup 5 trades the nearest expiry, setups 6–7 the nearest one at least "
-                   "2 days away (next week's on Mon/Tue).")
-    else:
-        ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",
-                               accept_multiple_files=True, key="bt_upload")
-        if ups:
-            try:
-                raw = BT.load_csvs(ups)
-            except Exception as e:
-                st.error(f"Could not read the files: {e}")
-
-    jpath = BT.journal_path()
-    c1, c2 = st.columns([1, 3])
-    save = c2.checkbox("Save these days to the forward-test journal (replaces those days if already saved)",
-                       value=True, key="bt_save")
-    if c1.button("Run backtest", type="primary", disabled=raw.empty and not bt_days, key="bt_run"):
-        if bt_days:
-            raw = _bt_raw(sorted(bt_days))
-            if raw.empty:
-                st.error("No option data collected for those days.")
-                st.stop()
-        try:
-            trades = _run_backtest(raw, str(root / underlying / "INDEX") if src.startswith("Collected") else None)
-        except ValueError as e:
-            st.error(f"Can't run on this data: {e}")
-            st.stop()
-        tested = sorted(pd.to_datetime(raw["timestamp"]).dt.date.unique())
-        st.session_state["bt_result"] = (trades, tested)
-        if save:
-            BT.update_journal(trades, tested, jpath)
-            st.toast(f"Saved {len(tested)} day(s) to the journal")
-
-    if "bt_result" in st.session_state:
-        trades, tested = st.session_state["bt_result"]
-        st.markdown(f"#### This run · {len(tested)} day(s): {', '.join(f'{d:%d %b}' for d in tested)}")
-        _scoreboard_view(trades, "run")
-        _trades_view(trades, "run_pick")
-        st.download_button("Download these trades (CSV)", trades.to_csv(index=False), "backtest_trades.csv",
-                           key="bt_dl_run")
-
-    st.divider()
-    st.markdown("#### Forward-test journal (all saved days)")
-    journal = BT.read_journal(jpath)
-    if journal.empty:
-        st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
-    else:
-        fwd_only = st.toggle(f"Only days after the rule-finding days (after {BT.SR_FOUND_UNTIL:%d %b})", value=True,
-                             key="bt_fwd")
-        jv = journal[journal.setup.isin(BT.ALL_SETUPS)]       # switched-off setups' old rows stay hidden
-        jv = BT.forward_only(jv) if fwd_only else jv
-        if jv.empty:
-            st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")
+        src = st.radio("Data", ["Collected data", "Upload CSV files"], horizontal=True, key="bt_src")
+        raw, bt_days = pd.DataFrame(), []
+        if src.startswith("Collected"):
+            trading_days = sorted({pd.Timestamp(p.name.split("_")[-2]).date()
+                                   for p in (root / underlying / "INDEX").glob(f"{underlying}_INDEX_*_1min.csv")}
+                                  | set(days), reverse=True)
+            bt_days = st.multiselect("Days to test", trading_days, default=[d for d in sel_days if d in trading_days],
+                                     key=f"bt_days_{underlying}", format_func=lambda d: d.strftime("%a %d %b"))
+            st.caption("Each day uses its collected expiries at 1-min, all strikes (the sidebar expiry, strike range and "
+                       "candle don't matter here): setup 5 trades the nearest expiry, setups 6–7 the nearest one at least "
+                       "2 days away (next week's on Mon/Tue).")
         else:
-            st.caption(f"{jv.day.nunique()} day(s) · journal file: `{jpath}`")
-            _scoreboard_view(jv, "jr")
-            with st.expander("All journal trades"):
-                _trades_view(jv, "jr_pick")
-            st.download_button("Download journal (CSV)", jv.to_csv(index=False), "setups_journal.csv",
-                               key="bt_dl_jr")
+            ups = st.file_uploader("Combined option CSVs (Data explorer / Full_data export format)", type="csv",
+                                   accept_multiple_files=True, key="bt_upload")
+            if ups:
+                try:
+                    raw = BT.load_csvs(ups)
+                except Exception as e:
+                    st.error(f"Could not read the files: {e}")
+
+        jpath = BT.journal_path()
+        c1, c2 = st.columns([1, 3])
+        save = c2.checkbox("Save these days to the forward-test journal (replaces those days if already saved)",
+                           value=True, key="bt_save")
+        if c1.button("Run backtest", type="primary", disabled=raw.empty and not bt_days, key="bt_run"):
+            if bt_days:
+                raw = _bt_raw(sorted(bt_days))
+                if raw.empty:
+                    st.error("No option data collected for those days.")
+                    return
+            try:
+                trades = _run_backtest(raw, str(root / underlying / "INDEX") if src.startswith("Collected") else None)
+            except ValueError as e:
+                st.error(f"Can't run on this data: {e}")
+                return
+            tested = sorted(pd.to_datetime(raw["timestamp"]).dt.date.unique())
+            st.session_state["bt_result"] = (trades, tested)
+            if save:
+                BT.update_journal(trades, tested, jpath)
+                st.toast(f"Saved {len(tested)} day(s) to the journal")
+
+        if "bt_result" in st.session_state:
+            trades, tested = st.session_state["bt_result"]
+            st.markdown(f"#### This run · {len(tested)} day(s): {', '.join(f'{d:%d %b}' for d in tested)}")
+            _scoreboard_view(trades, "run")
+            _trades_view(trades, "run_pick")
+            st.download_button("Download these trades (CSV)", trades.to_csv(index=False), "backtest_trades.csv",
+                               key="bt_dl_run")
+
+        st.divider()
+        st.markdown("#### Forward-test journal (all saved days)")
+        journal = BT.read_journal(jpath)
+        if journal.empty:
+            st.info(f"Nothing saved yet. Run a backtest with *Save* ticked. Journal file: `{jpath}`")
+        else:
+            fwd_only = st.toggle(f"Only days after the rule-finding days (after {BT.SR_FOUND_UNTIL:%d %b})", value=True,
+                                 key="bt_fwd")
+            jv = journal[journal.setup.isin(BT.ALL_SETUPS)]       # switched-off setups' old rows stay hidden
+            jv = BT.forward_only(jv) if fwd_only else jv
+            if jv.empty:
+                st.info("No forward-test days saved yet. Turn the toggle off to see the baseline days.")
+            else:
+                st.caption(f"{jv.day.nunique()} day(s) · journal file: `{jpath}`")
+                _scoreboard_view(jv, "jr")
+                with st.expander("All journal trades"):
+                    _trades_view(jv, "jr_pick")
+                st.download_button("Download journal (CSV)", jv.to_csv(index=False), "setups_journal.csv",
+                                   key="bt_dl_jr")
+
+    _backtest_panel()

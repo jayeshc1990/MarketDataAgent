@@ -107,7 +107,8 @@ Registers the `MarketDataAgent` task at 09:05 Mon–Fri. The PC must be on (or a
 ## Analysis dashboard
 
 A web dashboard (`analysis/app.py`, Streamlit + Plotly) for exploring one expiry at a time. Pick the index,
-expiry, trading days, 1/5-min candles and strike range in the sidebar.
+expiry, trading days, 1/5-min candles and strike range in the sidebar. "Auto-refresh when new data arrives" is on by
+default in market hours (09:15–15:45 IST, weekdays) and switches off at the close.
 
 | Tab | What it shows |
 |---|---|
