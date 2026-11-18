@@ -228,6 +228,29 @@ marked 🧪 TEST, to see the real messages: `.venv/bin/python analysis/live_sign
 To send the alerts to several people, create a Telegram group with them and the bot, send a message in it,
 and put the group's chat id (negative, from `--find-chat`) in `TELEGRAM_CHAT_ID`.
 
+### Trade Executor (automatic orders)
+
+This agent is the brain; the **Trade Executor** (a separate service on the same VPS, `127.0.0.1:8000`) places
+the orders at Zerodha. The same minute runner sends it signals in the executor's format (SIGNAL_SPEC,
+2026-11-18) for the setups in `config.yaml` → `executor.setups` (setup 6):
+
+| When | Signal |
+|---|---|
+| a signal's 5-min candle closes | `NEW` `CALL`/`PUT`, contract `NIFTY 25300 CE (17 NOV 2026) @ <signal close>`, `sl` = signal close − 30 (Zerodha holds it as a GTT) |
+| the backtest exits (spot back through the level, target / near-target trail, 14:45) | `SELL` with the trade's `trade_id` |
+| the backtest says the limit buy wouldn't have filled | `SELL` straight away (the trade isn't in the backtest) |
+
+- `GET /status` is read before every decision: one trade at a time (a signal while the executor holds a trade
+  is skipped), and a trade that ended there (GTT stop, 15:10 square-off, manual exit) is noticed.
+- Retries only when the executor doesn't answer (0.5 / 1 / 2 s, same `trade_id`); a lost answer followed by
+  `was already used` is resolved from `/status`. Signals older than `executor.stale_minutes` are never sent.
+- Every executor event (BUY sent, SELL sent, refused, closed at the executor, executor not answering) is posted
+  to Telegram with a 🤖 Executor prefix. What was sent is kept in `Data/SIGNALS/<date>.json` under `exec`.
+- Quantities, accounts and paper/live mode are the executor's settings. The executor buys at the live price,
+  so the fill can differ from the backtest's limit at the signal close.
+- Check it can reach the executor: `.venv/bin/python -m market_agent.executor --status`.
+  Switch off: `executor.enabled: false`.
+
 ## Notes / limits
 
 * Volume is in units (contracts x lot size), like OI and bid/ask quantities. Angel One's REST candles report F&O volume in lots; the agent converts them.

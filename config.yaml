@@ -90,3 +90,13 @@ signals:
   # 7_sr_daily_levels - add 7 once its backtest on the daily history looks good)
   setups: [6_sr_filtered_next_expiry]     # only setup 6 on Telegram (user's choice, 2026-11-18)
   stale_minutes: 3        # don't send an alert older than this (e.g. after the server was down)
+
+# Trade Executor (separate service on this VPS that places the orders; spec: SIGNAL_SPEC 2026-11-18).
+# The minute runner (analysis/live_signals.py, marketdatasignals timer) sends it NEW CALL/PUT at a setup's
+# signal (sl = signal close - 30, held at Zerodha as a GTT) and SELL at the setup's exit. Quantities,
+# accounts and paper/live mode are set on the executor, not here.
+executor:
+  enabled: true
+  url: http://127.0.0.1:8000
+  setups: [6_sr_filtered_next_expiry]
+  stale_minutes: 3        # never send a NEW for a signal older than this

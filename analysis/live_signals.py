@@ -10,6 +10,13 @@ collected 1-min option data through the same backtest code, so the alerts follow
 Sent alerts are remembered in <data_dir>/SIGNALS/<date>.json, so nothing is sent twice and a failed send
 is retried on the next run. Alerts older than `signals.stale_minutes` are not sent (e.g. after downtime).
 
+Trade Executor (config `executor:`, client in market_agent/executor.py): for `executor.setups` the same run
+also sends the trades to the executor on this VPS, which places the orders:
+  NEW CALL/PUT  at the signal (with sl = signal close - 30, held at Zerodha as a GTT; reference @ signal close)
+  SELL          when the backtest exits (spot level, target, 14:45) or says the limit wouldn't have filled
+`GET /status` is read before every decision; a trade that ended at the executor (GTT stop, 15:10, manual
+exit) is noticed there. Executor events are posted to Telegram as well (if it is set up).
+
     python analysis/live_signals.py                        # one run (what the timer does)
     python analysis/live_signals.py --dry-run              # print the messages instead of sending
     python analysis/live_signals.py --replay 2026-11-11    # replay a past day minute by minute (prints only)
@@ -30,6 +37,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from analysis import data as D  # noqa: E402
 from analysis import setups_backtest as B  # noqa: E402
+from market_agent import executor as X  # noqa: E402
 from market_agent import telegram  # noqa: E402
 from market_agent.config import IST, PROJECT_ROOT, Config  # noqa: E402
 
@@ -49,6 +57,14 @@ def settings() -> dict:
     return {"underlying": s.get("underlying", "NIFTY"),
             "setups": s.get("setups", [B.SR_SETUP, B.SR6_SETUP]),
             "stale": pd.Timedelta(minutes=int(s.get("stale_minutes", 3)))}
+
+
+def exec_settings() -> dict:
+    raw = Config(PROJECT_ROOT / "config.yaml").raw
+    e, s = raw.get("executor") or {}, raw.get("signals") or {}
+    return {"enabled": bool(e.get("enabled", False)), "url": e.get("url", X.DEFAULT_URL),
+            "setups": e.get("setups", [B.SR6_SETUP]),
+            "stale": pd.Timedelta(minutes=int(e.get("stale_minutes", s.get("stale_minutes", 3))))}
 
 
 def load_day(root: Path, underlying: str, day) -> pd.DataFrame:
@@ -195,6 +211,107 @@ def process(trades: pd.DataFrame, pending: list, state: dict, now: pd.Timestamp,
     return state
 
 
+# ---------------------------------------------------------------- trade executor
+def _exec_note(text: str) -> str:
+    return f"🤖 <b>Executor</b> · {text}"
+
+
+def execute(trades: pd.DataFrame, pending: list, missed, state: dict, now: pd.Timestamp, ex, ecfg, notify) -> dict:
+    """Sends NEW / SELL signals to the executor for `ecfg["setups"]` and records them in state["exec"].
+    `ex` is a market_agent.executor.Executor; `notify(text)` posts to Telegram (must not raise)."""
+    book = state.setdefault("exec", {})
+    setups, stale = ecfg["setups"], ecfg["stale"]
+    live = {k: v for k, v in book.items() if v["state"] in ("sending", "open", "closing")}
+    due = [p for p in pending if p["setup"] in setups and _key(p["setup"], p["signal"], p["symbol"]) not in book]
+    if not live and not due:
+        return state
+    try:
+        st = ex.status()
+    except X.ExecutorDown as e:
+        if not state.get("exec_down"):
+            notify(_exec_note(f"⚠️ not answering ({html.escape(str(e))}); nothing sent this minute"))
+        state["exec_down"] = str(now)
+        return state
+    state.pop("exec_down", None)
+    held = X.open_trade_id(st)
+
+    # 1. trades of ours that the executor no longer holds ended there (GTT stop, 15:10, manual exit)
+    for k, v in live.items():
+        if held == v["trade_id"]:
+            if v["state"] == "sending":
+                v["state"] = "open"
+            continue
+        if v["state"] == "open":
+            notify(_exec_note(f"trade closed at the executor: {html.escape(v['contract'])}"))
+        v.update(state="closed" if v["state"] != "sending" else "error", closed=str(now),
+                 note=v.get("note") or "ended at the executor")
+
+    # 2. exits: the backtest left the trade, or its limit buy wouldn't have filled
+    exits = {_key(x["setup"], x["signal"], x["symbol"]): "limit not filled in the backtest" for x in missed}
+    for t in trades.itertuples() if len(trades) else []:
+        if t.exit_reason != "data_end_open":
+            exits.setdefault(_key(t.setup, t.signal, t.symbol), EXIT_LABEL.get(t.exit_reason, t.exit_reason))
+    if now - now.normalize() >= B.FORCED_EXIT:     # by the clock: the 14:45 candle isn't in the data yet
+        for k, v in book.items():
+            if v["state"] == "open":
+                exits.setdefault(k, EXIT_LABEL["forced_14:45"])
+    for k, why in exits.items():
+        v = book.get(k)
+        if not v or v["state"] != "open" or held != v["trade_id"]:
+            continue
+        try:
+            a = ex.signal(X.sell_signal(v["trade_id"]))
+        except X.ExecutorDown as e:
+            notify(_exec_note(f"⚠️ SELL not delivered ({html.escape(str(e))}); retrying next minute"))
+            continue
+        if a.accepted:
+            v.update(state="closing", sell=str(now), note=why)
+            notify(_exec_note(f"🔴 SELL sent ({why}): {html.escape(v['contract'])}"))
+        elif a.http == 409 and ("already closed" in a.message or "no open BUY position" in a.message):
+            v.update(state="closed", closed=str(now), note=f"{why} (already closed at the executor)")
+        else:
+            v.update(note=f"SELL refused: HTTP {a.http} {a.message}")
+            notify(_exec_note(f"⚠️ SELL refused (HTTP {a.http}): {html.escape(a.message)}. Check the executor"))
+
+    # 3. entries: one trade at a time, only fresh signals
+    for p in due:
+        k = _key(p["setup"], p["signal"], p["symbol"])
+        if k in book:       # the same signal listed again (one candle crossing several levels): first one wins
+            continue
+        name = contract(p["symbol"])
+        if now - p["signal"] > stale:
+            book[k] = {"state": "skipped", "note": "stale signal", "contract": name}
+            continue
+        if held:
+            book[k] = {"state": "skipped", "note": f"executor busy with trade {held}", "contract": name}
+            notify(_exec_note(f"skipped {html.escape(name)}: a trade ({html.escape(held)}) is still open"))
+            continue
+        tid = X.new_trade_id(now)
+        sig = X.new_signal(tid, p["symbol"], p["signal_close"], p["signal_close"] - B.SR_OPT_STOP)
+        book[k] = {"state": "sending", "trade_id": tid, "contract": sig["contract"], "signal": sig, "sent": str(now)}
+        try:
+            a = ex.signal(sig)
+        except X.ExecutorDown as e:
+            book[k].update(state="error", note=str(e))
+            notify(_exec_note(f"⚠️ BUY not delivered, executor down ({html.escape(str(e))}): "
+                              f"{html.escape(sig['contract'])}"))
+            continue
+        if a.http == 409 and "was already used" in a.message:     # an earlier try got through
+            if X.open_trade_id(ex.status()) == tid:
+                a = X.Answer(200, {"accepted": True})
+        if a.accepted:
+            legs = ", ".join(f"{g.get('account')} {g.get('quantity')}" for g in a.body.get("legs", []))
+            book[k].update(state="open", symbol=a.body.get("symbol"), legs=a.body.get("legs"))
+            held = tid
+            notify(_exec_note(f"🟢 BUY sent: {html.escape(sig['contract'])} · SL {sig.get('sl', '-')}"
+                              + (f" · {html.escape(legs)}" if legs else "")))
+        else:
+            kind = "refused" if a.http == 409 else f"rejected (HTTP {a.http}, a bug on this side)"
+            book[k].update(state="refused" if a.http == 409 else "rejected", note=f"HTTP {a.http} {a.message}")
+            notify(_exec_note(f"⚠️ BUY {kind}: {html.escape(a.message)} · {html.escape(sig['contract'])}"))
+    return state
+
+
 def run_once(dry_run: bool):
     cfg, root = settings(), D.data_root()
     now = pd.Timestamp(datetime.now(IST).replace(tzinfo=None))
@@ -202,12 +319,31 @@ def run_once(dry_run: bool):
     if raw.empty:
         print(f"{now:%H:%M:%S} no data for today yet")
         return
-    if not dry_run and not telegram.configured():
+    ecfg = exec_settings()
+    tg_on = dry_run or telegram.configured()
+    if not tg_on and not ecfg["enabled"]:
         sys.exit("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env (see market_agent/telegram.py)")
     trades, pending, missed = evaluate(raw, root / cfg["underlying"] / "INDEX")
     path = state_path(root, now.date())
     state = load_state(path)
     sent = []
+
+    def notify(text):                 # executor events: Telegram if possible, never fails the run
+        print(text, flush=True)
+        if not dry_run and telegram.configured():
+            try:
+                telegram.send(text)
+            except telegram.TelegramError as e:
+                print(f"telegram: {e}", flush=True)
+
+    if ecfg["enabled"] and not dry_run:   # orders first: they are the time-critical part
+        try:
+            execute(trades, pending, missed, state, now, X.Executor(ecfg["url"]), ecfg, notify)
+        finally:
+            save_state(path, state)
+    if not tg_on:
+        print(f"{now:%H:%M:%S} Telegram not set up: alerts skipped")
+        return
 
     def send(text):
         print(text if dry_run else f"sending: {text.splitlines()[0]}", flush=True)
