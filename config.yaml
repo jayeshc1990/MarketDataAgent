@@ -88,5 +88,5 @@ signals:
   underlying: NIFTY
   # setups from analysis/setups_backtest.py to alert on (5_sr_trend_pcr, 6_sr_filtered_next_expiry,
   # 7_sr_daily_levels - add 7 once its backtest on the daily history looks good)
-  setups: [5_sr_trend_pcr, 6_sr_filtered_next_expiry]
+  setups: [6_sr_filtered_next_expiry]     # only setup 6 on Telegram (user's choice, 2026-11-18)
   stale_minutes: 3        # don't send an alert older than this (e.g. after the server was down)
