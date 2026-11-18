@@ -220,7 +220,12 @@ Create the bot first: in Telegram message **@BotFather** → `/newbot` → copy 
 Choose which setups alert in `config.yaml` → `signals.setups`. Sent alerts are remembered in
 `Data/SIGNALS/<date>.json` (nothing is sent twice; a failed send is retried next minute); alerts more than
 `signals.stale_minutes` old are skipped, e.g. after downtime. Check a past day without sending anything:
-`.venv/bin/python analysis/live_signals.py --replay 2026-11-11`. Log: `journalctl -u marketdatasignals -f`.
+`.venv/bin/python analysis/live_signals.py --replay 2026-11-11`. Send a past day's alerts to Telegram, each
+marked 🧪 TEST, to see the real messages: `.venv/bin/python analysis/live_signals.py --send-test 2026-11-11 [more days]`
+(a few minutes per day). Log: `journalctl -u marketdatasignals -f`.
+
+To send the alerts to several people, create a Telegram group with them and the bot, send a message in it,
+and put the group's chat id (negative, from `--find-chat`) in `TELEGRAM_CHAT_ID`.
 
 ## Notes / limits
 

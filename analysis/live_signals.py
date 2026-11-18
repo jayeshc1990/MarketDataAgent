@@ -13,6 +13,7 @@ is retried on the next run. Alerts older than `signals.stale_minutes` are not se
     python analysis/live_signals.py                        # one run (what the timer does)
     python analysis/live_signals.py --dry-run              # print the messages instead of sending
     python analysis/live_signals.py --replay 2026-11-11    # replay a past day minute by minute (prints only)
+    python analysis/live_signals.py --send-test 2026-11-11 # replay it and send its alerts, marked TEST
 """
 import argparse
 import html
@@ -20,6 +21,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from market_agent import telegram  # noqa: E402
 from market_agent.config import IST, PROJECT_ROOT, Config  # noqa: E402
 
 SUMMARY_AT = pd.Timedelta("14:50:00")
+TEST_SEND_GAP = 1.0      # seconds between test messages (Telegram allows ~20 a minute in a group)
 SYMBOL_RE = re.compile(r"^(?P<name>[A-Z]+)(?P<dd>\d{2})(?P<mon>[A-Z]{3})(?P<yy>\d{2})(?P<strike>\d+)(?P<type>CE|PE)$")
 SETUP_LABEL = {B.SR_SETUP: "Setup 5", B.SR6_SETUP: "Setup 6", B.SR7_SETUP: "Setup 7"}
 EXIT_LABEL = {"option_stop": "option stop (-30)", "spot_back_through_level": "spot back through the level",
@@ -220,13 +223,15 @@ def run_once(dry_run: bool):
     print(f"{now:%H:%M:%S} data to {raw.timestamp.max():%H:%M}, {len(trades)} trade(s) today, {len(sent)} alert(s)")
 
 
-def replay(day: str):
-    """Feeds a past day in minute by minute, as the timer would, and prints every alert."""
+def replay(day: str, to_telegram: bool = False):
+    """Feeds a past day in minute by minute, as the timer would, and prints every alert. With `to_telegram`
+    each alert is also sent, marked as a test of that day, so you can see the real messages."""
     cfg, root = settings(), D.data_root()
     day = pd.Timestamp(day).date()
     raw = load_day(root, cfg["underlying"], day)
     if raw.empty:
-        sys.exit(f"no data for {day}")
+        print(f"no data for {day}")
+        return None, None
     index_dir = root / cfg["underlying"] / "INDEX"
     state = {"buy": {}, "sell": {}, "skipped": {}, "unfilled": {}, "summary": False}
     for t in sorted(raw.timestamp.unique()):
@@ -236,7 +241,10 @@ def replay(day: str):
         trades, pending, missed = evaluate(raw[raw.timestamp <= t], index_dir)
 
         def send(text, now=now):
-            print(f"--- {now:%H:%M:%S}\n{text}\n")
+            print(f"--- {now:%H:%M:%S}\n{text}\n", flush=True)
+            if to_telegram:
+                telegram.send(f"🧪 <b>TEST</b> · alert of {day:%d %b} {now:%H:%M}\n{text}")
+                time.sleep(TEST_SEND_GAP)
 
         process(trades, pending, state, now, send, cfg, missed)
     final = B.run_setups(raw, index_dir)
@@ -251,8 +259,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="print the messages instead of sending them")
     ap.add_argument("--replay", metavar="YYYY-MM-DD", help="replay a past day minute by minute (prints only)")
+    ap.add_argument("--send-test", metavar="YYYY-MM-DD", nargs="+",
+                    help="replay past day(s) and send their alerts to Telegram, marked TEST")
     a = ap.parse_args()
-    if a.replay:
+    if a.send_test:
+        if not telegram.configured():
+            sys.exit("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env (see market_agent/telegram.py)")
+        for day in a.send_test:
+            print(f"=== {day}: replaying minute by minute (a few minutes per day) ...", flush=True)
+            replay(day, to_telegram=True)
+    elif a.replay:
         replay(a.replay)
     else:
         run_once(a.dry_run)
