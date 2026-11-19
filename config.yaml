@@ -97,6 +97,6 @@ signals:
 # accounts and paper/live mode are set on the executor, not here.
 executor:
   enabled: true
-  url: http://127.0.0.1:8000
+  url: http://162.35.172.36:8000   # executor's server; it accepts only this server's IP (74.50.64.172)
   setups: [6_sr_filtered_next_expiry]
   stale_minutes: 3        # never send a NEW for a signal older than this

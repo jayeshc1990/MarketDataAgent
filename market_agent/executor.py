@@ -1,15 +1,16 @@
 """Client for the Trade Executor (its SIGNAL_SPEC, version 2026-11-18).
 
-The executor runs on the same VPS and places the orders; this side only says *what* and *when*:
-    POST http://127.0.0.1:8000/signal   one JSON object: NEW (CALL / PUT / SELL), UPDATE or EXIT
-    GET  http://127.0.0.1:8000/status   {"open": true/false, "trade": {...}}  - the source of truth
-    GET  http://127.0.0.1:8000/health   {"ok": true}
+The executor runs on its own server and places the orders; this side only says *what* and *when*:
+    POST http://162.35.172.36:8000/signal   one JSON object: NEW (CALL / PUT / SELL), UPDATE or EXIT
+    GET  http://162.35.172.36:8000/status   {"open": true/false, "trade": {...}}  - the source of truth
+    GET  http://162.35.172.36:8000/health   {"ok": true}
+It accepts only this machine's registered IP (74.50.64.172); any other IP gets 403 or no answer.
 
 Every signal is checked here against the spec before it is sent (a 422 would mean a bug on this side).
 Retries happen only when no answer came back (connection error, timeout, 5xx): the identical body,
 same trade_id, after 0.5 s, 1 s and 2 s; after that ExecutorDown is raised.
 
-    python -m market_agent.executor --status        # what the executor holds now
+    python -m market_agent.executor --status        # what the executor holds now (url from config.yaml)
 """
 import argparse
 import json
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-DEFAULT_URL = "http://127.0.0.1:8000"
+DEFAULT_URL = "http://162.35.172.36:8000"
 TIMEOUT = 5.0
 RETRY_WAITS = (0.5, 1.0, 2.0)
 TRADE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
@@ -164,17 +165,40 @@ def open_trade_id(status: dict):
     return (status.get("trade") or {}).get("trade_id") if status.get("open") else None
 
 
+def config_url() -> str:
+    """executor.url from config.yaml (DEFAULT_URL if it isn't set)."""
+    try:
+        from pathlib import Path
+        from market_agent.config import Config
+        return (Config(Path(__file__).resolve().parent.parent / "config.yaml").raw.get("executor") or {}).get(
+            "url") or DEFAULT_URL
+    except Exception:
+        return DEFAULT_URL
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--url", default=DEFAULT_URL)
+    ap.add_argument("--url", default=None, help="default: executor.url in config.yaml")
     ap.add_argument("--status", action="store_true", help="print GET /status")
     a = ap.parse_args()
-    ex = Executor(a.url)
-    up = ex.health()
-    print(f"health ({a.url}):", "ok" if up else "NO ANSWER - is the Trade Executor running?")
-    if a.status and up:
+    url = a.url or config_url()
+    ex = Executor(url, waits=())
+    try:
+        h = ex._request("GET", "/health")
+    except ExecutorDown as e:
+        print(f"health ({url}): NO ANSWER - executor down, or its firewall doesn't let this machine in ({e})")
+        return 1
+    if h.http == 403:
+        print(f"health ({url}): HTTP 403 - this machine's IP isn't registered on the executor: {h.message}")
+        return 1
+    if h.http != 200 or h.body.get("ok") is not True:
+        print(f"health ({url}): HTTP {h.http} {h.body}")
+        return 1
+    print(f"health ({url}): ok")
+    if a.status:
         print(json.dumps(ex.status(), indent=1))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

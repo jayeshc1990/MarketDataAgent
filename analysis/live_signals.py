@@ -229,7 +229,7 @@ def execute(trades: pd.DataFrame, pending: list, missed, state: dict, now: pd.Ti
         st = ex.status()
     except X.ExecutorDown as e:
         if not state.get("exec_down"):
-            notify(_exec_note(f"⚠️ not answering ({html.escape(str(e))}); nothing sent this minute"))
+            notify(_exec_note(f"⚠️ can't reach it ({html.escape(str(e))}); nothing sent until it's back"))
         state["exec_down"] = str(now)
         return state
     state.pop("exec_down", None)

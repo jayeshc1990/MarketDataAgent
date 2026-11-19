@@ -230,7 +230,7 @@ and put the group's chat id (negative, from `--find-chat`) in `TELEGRAM_CHAT_ID`
 
 ### Trade Executor (automatic orders)
 
-This agent is the brain; the **Trade Executor** (a separate service on the same VPS, `127.0.0.1:8000`) places
+This agent is the brain; the **Trade Executor** (its own server, `http://162.35.172.36:8000`; it accepts only this server's IP, `74.50.64.172`) places
 the orders at Zerodha. The same minute runner sends it signals in the executor's format (SIGNAL_SPEC,
 2026-11-18) for the setups in `config.yaml` → `executor.setups` (setup 6):
 
@@ -244,8 +244,11 @@ the orders at Zerodha. The same minute runner sends it signals in the executor's
   is skipped), and a trade that ended there (GTT stop, 15:10 square-off, manual exit) is noticed.
 - Retries only when the executor doesn't answer (0.5 / 1 / 2 s, same `trade_id`); a lost answer followed by
   `was already used` is resolved from `/status`. Signals older than `executor.stale_minutes` are never sent.
-- Every executor event (BUY sent, SELL sent, refused, closed at the executor, executor not answering) is posted
+- Every executor event (BUY sent, SELL sent, refused, closed at the executor, executor unreachable) is posted
   to Telegram with a 🤖 Executor prefix. What was sent is kept in `Data/SIGNALS/<date>.json` under `exec`.
+- Check the connection with `.venv/bin/python -m market_agent.executor --status`. A `403` means this server's IP isn't
+  registered on the executor; no answer means the executor is down or its firewall drops this server. Either way no
+  order is sent, and a 🤖 Executor warning goes to Telegram.
 - Quantities, accounts and paper/live mode are the executor's settings. The executor buys at the live price,
   so the fill can differ from the backtest's limit at the signal close.
 - Check it can reach the executor: `.venv/bin/python -m market_agent.executor --status`.
