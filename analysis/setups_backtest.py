@@ -26,8 +26,9 @@ Setup 5 - support/resistance + day trend + PCR (own rules, see run_sr):
            breakout (closes 5+ above a resistance it was below) -> CE; rejection / breakdown -> PE.
   Filter : spot on the trade's side of the day's open, PCR since the open moved the trade's way, and at
            least 40 pts of room to the next level. Never on the expiry day of the traded expiry.
-  Trade  : ITM option (delta 0.55-0.75, closest to 0.62). Buy limit at the signal candle's close, live on
-           the next 1-min candle only: filled if that candle trades at or below it, else the signal is skipped.
+  Trade  : ITM option (delta 0.55-0.75, closest to 0.62). Bought at the signal candle's close (the price
+           the signal recommends) on the next 1-min candle; every signal counts as bought (the executor
+           handles the real fill).
            Exit when spot goes 15 pts back through the level, spot reaches the next level, the option
            falls 30, or 14:45. One position at a time, max 3 trades a day.
 
@@ -85,6 +86,7 @@ SR6_MIN_DTE, SR6_MIN_PCR, SR6_MAX_DIST = 2, 0.05, 30
 # setups 6-7 exit (2026-11-17): target hit when spot's 1-min high/low comes within SR_NEAR_TARGET pts of it;
 # once spot is within SR_NEAR_ZONE pts of the target, exit if it falls SR_NEAR_TRAIL pts from its best
 SR_NEAR_TARGET, SR_NEAR_ZONE, SR_NEAR_TRAIL = 5, 20, 10
+SR_TP_DELTA_MULT = 1.5        # option target premium = signal close + 1.5 x delta x spot points (opt_target)
 NEEDED = ["timestamp", "symbol", "strike", "type", "high", "low", "close", "oi", "delta", "underlying_spot"]
 
 
@@ -272,10 +274,24 @@ def _next_level(side, m, extra=()):
     return max(c) if c else np.nan
 
 
-def _sr_exit(g, e, c0, k, spot_stop, spot_target, near=False):
+def opt_target(signal_close, adelta, spot, spot_target, side) -> float:
+    """Setups 6-7's target as an option premium (what the executor gets as `tp`): the signal close plus
+    SR_TP_DELTA_MULT x delta x the spot points to where the near-target exit fires. Delta grows as the option
+    goes deeper in the money, so plain delta x points is hit long before spot gets there (it cut setup 6 from
+    +673.55 to +576.25 on 23 Oct-19 Nov 2026); x1.5 makes it a backstop the spot exits normally beat
+    (+666.05). NaN when there is no next level."""
+    if spot_target is None or pd.isna(spot_target):
+        return np.nan
+    k = 1 if side == "CE" else -1
+    pts = k * (spot_target - k * SR_NEAR_TARGET - spot)
+    return round((signal_close + SR_TP_DELTA_MULT * abs(adelta) * max(pts, 0)) * 20) / 20    # NSE tick 0.05
+
+
+def _sr_exit(g, e, c0, k, spot_stop, spot_target, near=False, tp=np.nan):
     """Setup 5 exit. With `near` (setups 6-7): the target counts as hit when spot's 1-min high (CE) / low (PE)
     comes within SR_NEAR_TARGET of it, and once spot has been within SR_NEAR_ZONE of the target, the spot
-    stop trails SR_NEAR_TRAIL behind spot's best since entry."""
+    stop trails SR_NEAR_TRAIL behind spot's best since entry. `tp` (setups 6-7): the option target premium,
+    sold at `tp` when the option's 1-min high reaches it (the executor's GTT target)."""
     stop = c0 - SR_OPT_STOP
     peak = g.underlying_spot.iat[e]
     in_zone = False
@@ -284,6 +300,8 @@ def _sr_exit(g, e, c0, k, spot_stop, spot_target, near=False):
             return g.close.iat[j - 1], j - 1, "forced_14:45"
         if g.low.iat[j] <= stop:
             return stop, j, "option_stop"
+        if pd.notna(tp) and g.high.iat[j] >= tp:
+            return tp, j, "option_target"
         s = g.underlying_spot.iat[j]
         if k * (s - spot_stop) < 0:
             return g.close.iat[j], j, "trail_near_target" if in_zone else "spot_back_through_level"
@@ -317,7 +335,7 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
     are setup 6's extra filters; `daily` (daily candles from levels.load_daily) adds setup 7's multi-day
     levels; `near` is setups 6-7's near-target exit (see _sr_exit). If `pending` is a list, a signal on the
     data's last minute (its entry candle not formed yet) is appended to it - used by the live Telegram alerts.
-    `missed` (a list) collects signals whose limit buy wasn't filled on the next candle."""
+    `missed` is kept for callers and stays empty: every signal counts as bought at its close."""
     exp = pd.to_datetime(d.symbol.str.extract(EXPIRY_RE)[0], format="%d%b%y")
     d = d[exp.values != d.day.values]                       # skip the traded expiry's own expiry day
     if d.empty:
@@ -355,21 +373,18 @@ def run_sr(d: pd.DataFrame, index_dir=None, min_pcr=0.0, max_dist=None, pending=
         c = c.iloc[(c.adelta - tgt).abs().argmin()]
         g = px[(r.day, c.symbol)]
         e = int(np.flatnonzero(g.timestamp.values == r.ts.to_datetime64())[0]) + 1
+        entry_px = g.close.iat[e - 1]          # the recommended buy: the signal candle's close
+        tp = opt_target(entry_px, c.adelta, m.spot, nxt, r.side) if near else np.nan
         # live: only once the 5-min candle is complete (its last minute is in), else it can still change
         if (e >= len(g) and pending is not None and r.ts == d.timestamp.max() and r.ts - r.day < FORCED_EXIT
                 and (r.ts + pd.Timedelta("1min")).minute % 5 == 0):
             pending.append(dict(day=r.day.date(), signal=r.ts, symbol=c.symbol, side=r.side,
-                                signal_close=g.close.iat[e - 1], spot=m.spot, spot_stop=r.L - k * SR_SPOT_STOP,
-                                spot_target=nxt, detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
+                                signal_close=entry_px, spot=m.spot, spot_stop=r.L - k * SR_SPOT_STOP,
+                                spot_target=nxt, sl=entry_px - SR_OPT_STOP, tp=tp,
+                                detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
         if e >= len(g) or g.tod.iat[e] >= FORCED_EXIT:
             continue
-        entry_px = g.close.iat[e - 1]          # buy limit at the signal candle's close, live on the next candle
-        if g.low.iat[e] > entry_px:            # that candle never traded at the limit: not filled, signal skipped
-            if missed is not None:
-                missed.append(dict(day=r.day.date(), signal=r.ts, symbol=c.symbol, side=r.side, limit=entry_px,
-                                   detail=f"{r.kind} @ {r.level} {r.L:.0f}"))
-            continue
-        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt, near)
+        exit_px, j, why = _sr_exit(g, e, entry_px, k, r.L - k * SR_SPOT_STOP, nxt, near, tp)
         free_at = g.timestamp.iat[j]; count[r.day] = count.get(r.day, 0) + 1
         pnl = exit_px - entry_px
         trades.append(dict(day=r.day.date(), signal=r.ts, entry=g.timestamp.iat[e], exit=g.timestamp.iat[j],
@@ -394,7 +409,7 @@ def run_setups(raw: pd.DataFrame, index_dir=None, pending=None, missed=None) -> 
     """All trades of all setups, one row per trade with a `setup` column. `index_dir` (the INDEX folder)
     gives setups 5-6 the previous day's high/low/close; without it they come from the data's own spot.
     `pending` (a list) collects setup 5-7 signals on the last minute whose entry candle isn't there yet;
-    `missed` (a list) collects signals whose limit buy wasn't filled."""
+    `missed` (a list) stays empty (kept for callers): every signal counts as bought at its close."""
     missing = [c for c in NEEDED if c not in raw]
     if missing:
         raise ValueError(f"missing columns: {', '.join(missing)}")

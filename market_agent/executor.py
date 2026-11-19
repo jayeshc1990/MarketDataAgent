@@ -68,12 +68,14 @@ def contract_text(symbol: str, ref_price: float = None) -> str:
     return text
 
 
-def new_signal(trade_id: str, symbol: str, ref_price: float, sl: float = None) -> dict:
+def new_signal(trade_id: str, symbol: str, ref_price: float, sl: float = None, tp: float = None) -> dict:
     side = ANGEL_SYMBOL_RE.match(symbol)["type"] if ANGEL_SYMBOL_RE.match(symbol) else None
     s = {"type": "NEW", "trade_id": trade_id, "action": "CALL" if side == "CE" else "PUT",
          "contract": contract_text(symbol, ref_price)}
     if sl is not None and sl > 0:
         s["sl"] = round(float(sl), 2)
+    if tp is not None and tp == tp and tp > ref_price and (sl is None or tp > sl):
+        s["tp"] = round(float(tp), 2)
     return s
 
 

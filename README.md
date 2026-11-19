@@ -192,8 +192,12 @@ so that next week's contracts exist on those days. Setup 7 is setup 6 plus the m
 as soon as spot's 1-min high/low comes within 5 pts of it, and once spot has been within 20 pts of the target
 they exit if it falls 10 pts from its best (`SR_NEAR_TARGET`, `SR_NEAR_ZONE`, `SR_NEAR_TRAIL`). In the tab, each chosen day uses
 its own collected expiries.
-Setups 5–7 buy with a limit at the signal candle's close, live on the next 1-min candle: filled if that candle
-trades at or below it, otherwise the signal is skipped (Telegram then sends "NOT FILLED — cancel the order").
+Setups 5–7 buy at the signal candle's close (the recommended price) on the next candle, and every signal counts as
+bought: live, a sent BUY is never cancelled, because the executor handles the real fill. Exits are sold at the
+market price of the exit candle (spot back through the level, near-target / trail, 14:45), at the stop (−30) or,
+for setups 6–7, at the option target premium `tp` = signal close + 1.5 × delta × spot points to the near-target exit
+(`SR_TP_DELTA_MULT`). Plain delta × points was hit far too early (delta grows as the option goes in the money); ×1.5
+makes `tp` a backstop that the spot exits normally beat.
 Each run can save its days to `Data/BACKTEST/setups_journal.csv`; re-running a day replaces it. The journal view
 hides the days each setup's rules were found on (28–30 Oct 2026 for 1–4, up to 11 Nov 2026 for 5–6). The same can be
 run by hand on combined option CSVs (Data explorer export format):
@@ -236,9 +240,9 @@ the orders at Zerodha. The same minute runner sends it signals in the executor's
 
 | When | Signal |
 |---|---|
-| a signal's 5-min candle closes | `NEW` `CALL`/`PUT`, contract `NIFTY 25300 CE (17 NOV 2026) @ <signal close>`, `sl` = signal close − 30 (Zerodha holds it as a GTT) |
+| a signal's 5-min candle closes | `NEW` `CALL`/`PUT`, contract `NIFTY 25300 CE (17 NOV 2026) @ <signal close>`, `sl` = signal close − 30, `tp` = the option target premium (Zerodha holds both as a GTT) |
 | the backtest exits (spot back through the level, target / near-target trail, 14:45) | `SELL` with the trade's `trade_id` |
-| the backtest says the limit buy wouldn't have filled | `SELL` straight away (the trade isn't in the backtest) |
+| the buy doesn't fill at the signal close | nothing: a sent `NEW` is never cancelled (the fill is the executor's job) |
 
 - `GET /status` is read before every decision: one trade at a time (a signal while the executor holds a trade
   is skipped), and a trade that ended there (GTT stop, 15:10 square-off, manual exit) is noticed.

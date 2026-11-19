@@ -2,18 +2,20 @@
 
 Runs once a minute in market hours (deploy/setup_signals.sh installs the timer). Each run replays today's
 collected 1-min option data through the same backtest code, so the alerts follow the backtest exactly:
-  BUY     a setup signal on the minute that just closed: place a buy limit at the signal candle's close,
-          live for the next 1-min candle (the backtest fills it if that candle trades at or below it)
-  NOT FILLED  the next candle never traded at the limit: cancel the order (the backtest skips the signal)
-  SELL    an alerted trade hit its exit: option stop, spot back through the level, next level, or 14:45
+  BUY     a setup signal on the minute that just closed, at the signal candle's close (the recommended
+          buy). It is never cancelled: the trade is tracked as bought at that price
+  SELL    an alerted trade hit its exit: option stop, option target (setups 6-7), spot back through the
+          level, spot near the next level / its trail, or 14:45
   SUMMARY the day's alerted trades, once after 14:50
 Sent alerts are remembered in <data_dir>/SIGNALS/<date>.json, so nothing is sent twice and a failed send
 is retried on the next run. Alerts older than `signals.stale_minutes` are not sent (e.g. after downtime).
 
 Trade Executor (config `executor:`, client in market_agent/executor.py): for `executor.setups` the same run
 also sends the trades to the executor on this VPS, which places the orders:
-  NEW CALL/PUT  at the signal (with sl = signal close - 30, held at Zerodha as a GTT; reference @ signal close)
-  SELL          when the backtest exits (spot level, target, 14:45) or says the limit wouldn't have filled
+  NEW CALL/PUT  at the signal: reference @ signal close, sl = signal close - 30 and tp = the option target
+                premium (signal close + delta x spot points to the near-target exit); Zerodha holds them as a GTT
+  SELL          when the backtest exits on spot (back through the level, near the target, the trail) or 14:45.
+                Never for the fill: buying is the executor's job
 `GET /status` is read before every decision; a trade that ended at the executor (GTT stop, 15:10, manual
 exit) is noticed there. Executor events are posted to Telegram as well (if it is set up).
 
@@ -45,7 +47,8 @@ SUMMARY_AT = pd.Timedelta("14:50:00")
 TEST_SEND_GAP = 1.0      # seconds between test messages (Telegram allows ~20 a minute in a group)
 SYMBOL_RE = re.compile(r"^(?P<name>[A-Z]+)(?P<dd>\d{2})(?P<mon>[A-Z]{3})(?P<yy>\d{2})(?P<strike>\d+)(?P<type>CE|PE)$")
 SETUP_LABEL = {B.SR_SETUP: "Setup 5", B.SR6_SETUP: "Setup 6", B.SR7_SETUP: "Setup 7"}
-EXIT_LABEL = {"option_stop": "option stop (-30)", "spot_back_through_level": "spot back through the level",
+EXIT_LABEL = {"option_stop": "option stop (-30)", "option_target": "option reached the target premium",
+              "spot_back_through_level": "spot back through the level",
               "spot_at_next_level": "spot reached the next level", "forced_14:45": "14:45 square-off",
               "trail_near_target": "spot turned back near the target"}
 NEAR_EXIT_SETUPS = {B.SR6_SETUP, B.SR7_SETUP}       # setups with the near-target exit (setups_backtest._sr_exit)
@@ -96,17 +99,17 @@ def _num(x, fmt=",.0f"):
 
 
 def buy_message(setup, symbol, signal, detail, side, spot=None, spot_stop=None, spot_target=None,
-                signal_close=None, entry=None, entry_px=None) -> str:
+                signal_close=None, entry=None, entry_px=None, tp=None) -> str:
     below = "below" if side == "CE" else "above"
     lines = [f"🟢 <b>BUY {html.escape(contract(symbol))}</b>",
              f"{SETUP_LABEL.get(setup, setup)} · {html.escape(detail)}"]
     if entry_px is None:
         nxt = pd.Timestamp(signal) + pd.Timedelta("1min")
         lines += [f"Signal candle {signal:%H:%M}: option {_num(signal_close, '.2f')} · spot {_num(spot)}",
-                  f"Entry: <b>buy limit {_num(signal_close, '.2f')}</b> during the {nxt:%H:%M} candle; "
-                  "cancel if not filled by its end"]
+                  f"Entry: <b>buy at {_num(signal_close, '.2f')}</b> from the {nxt:%H:%M} candle "
+                  "(tracked as bought at this price)"]
     else:   # the alert comes late: the entry candle has already closed
-        lines.append(f"Signal {signal:%H:%M} · limit filled {entry:%H:%M} @ {entry_px:.2f}")
+        lines.append(f"Signal {signal:%H:%M} · tracked as bought {entry:%H:%M} @ {entry_px:.2f}")
     has_target = spot_target is not None and pd.notna(spot_target)
     k = 1 if side == "CE" else -1
     if setup in NEAR_EXIT_SETUPS and has_target:
@@ -115,8 +118,9 @@ def buy_message(setup, symbol, signal, detail, side, spot=None, spot_stop=None, 
                   "from its best")
     else:
         target = f"spot reaches {_num(spot_target)}" if has_target else None
+    has_tp = tp is not None and pd.notna(tp)
     exits = [f"spot {below} {_num(spot_stop)}" if spot_stop is not None else None, target,
-             "option 30 below entry", "14:45"]
+             f"option reaches {_num(tp, '.2f')}" if has_tp else None, "option 30 below entry", "14:45"]
     lines += ["Exit if: " + " · ".join(x for x in exits if x), FOOTER]
     return "\n".join(lines)
 
@@ -188,7 +192,7 @@ def process(trades: pd.DataFrame, pending: list, state: dict, now: pd.Timestamp,
             state["skipped"][k] = "stale signal"
             continue
         send(buy_message(p["setup"], p["symbol"], p["signal"], p["detail"], p["side"], p["spot"], p["spot_stop"],
-                         p["spot_target"], signal_close=p["signal_close"]))
+                         p["spot_target"], signal_close=p["signal_close"], tp=p.get("tp")))
         state["buy"][k] = str(now)
     for t in trades[trades.setup.isin(setups)].itertuples() if len(trades) else []:
         k = _key(t.setup, t.signal, t.symbol)
@@ -246,8 +250,9 @@ def execute(trades: pd.DataFrame, pending: list, missed, state: dict, now: pd.Ti
         v.update(state="closed" if v["state"] != "sending" else "error", closed=str(now),
                  note=v.get("note") or "ended at the executor")
 
-    # 2. exits: the backtest left the trade, or its limit buy wouldn't have filled
-    exits = {_key(x["setup"], x["signal"], x["symbol"]): "limit not filled in the backtest" for x in missed}
+    # 2. exits: only when the backtest leaves the trade. A sent NEW is never cancelled for its fill:
+    #    buying is the executor's job (`missed` is ignored on purpose)
+    exits = {}
     for t in trades.itertuples() if len(trades) else []:
         if t.exit_reason != "data_end_open":
             exits.setdefault(_key(t.setup, t.signal, t.symbol), EXIT_LABEL.get(t.exit_reason, t.exit_reason))
@@ -287,7 +292,7 @@ def execute(trades: pd.DataFrame, pending: list, missed, state: dict, now: pd.Ti
             notify(_exec_note(f"skipped {html.escape(name)}: a trade ({html.escape(held)}) is still open"))
             continue
         tid = X.new_trade_id(now)
-        sig = X.new_signal(tid, p["symbol"], p["signal_close"], p["signal_close"] - B.SR_OPT_STOP)
+        sig = X.new_signal(tid, p["symbol"], p["signal_close"], p["sl"], p.get("tp"))
         book[k] = {"state": "sending", "trade_id": tid, "contract": sig["contract"], "signal": sig, "sent": str(now)}
         try:
             a = ex.signal(sig)
@@ -304,6 +309,7 @@ def execute(trades: pd.DataFrame, pending: list, missed, state: dict, now: pd.Ti
             book[k].update(state="open", symbol=a.body.get("symbol"), legs=a.body.get("legs"))
             held = tid
             notify(_exec_note(f"🟢 BUY sent: {html.escape(sig['contract'])} · SL {sig.get('sl', '-')}"
+                              f" · target {sig.get('tp', '-')}"
                               + (f" · {html.escape(legs)}" if legs else "")))
         else:
             kind = "refused" if a.http == 409 else f"rejected (HTTP {a.http}, a bug on this side)"
